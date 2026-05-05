@@ -1,7 +1,9 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, jsonify
 import pandas as pd
 from datetime import datetime
 import tempfile
+import base64
+import io
 from openpyxl import load_workbook
 
 app = Flask(__name__)
@@ -94,14 +96,21 @@ def ensure_columns(df, total_cols):
 @app.route("/dongbo", methods=["POST"])
 def dongbo():
     try:
-        file_old = request.files['file_old']
-        file_new = request.files['file_new']
-        file_map = request.files.get('file_map')
+        data = request.get_json()
 
+        # ===== DECODE FILE =====
+        file_old = io.BytesIO(base64.b64decode(data['file_old']))
+        file_new = io.BytesIO(base64.b64decode(data['file_new']))
+
+        file_map = None
+        if data.get("file_map"):
+            file_map = io.BytesIO(base64.b64decode(data['file_map']))
+
+        # ===== READ =====
         df_old = pd.read_excel(file_old, dtype=str).fillna("")
         df_new = pd.read_excel(file_new, dtype=str).fillna("")
 
-        # 🔥 SKIP 9 DÒNG ĐẦU FILE NEW
+        # 🔥 SKIP 9 DÒNG FILE NEW
         df_new = df_new.iloc[9:].reset_index(drop=True)
 
         df_old = ensure_columns(df_old, 28)
@@ -223,15 +232,14 @@ def dongbo():
         for i in range(len(df_old)):
             d = parse_date(df_old.iloc[i, 18])
             df_old.iloc[i, 27] = "Qua han" if d and d < today else "Chua qua han"
-        # ===== SET HEADER CHO CỘT AB =====
-        cols = list(df_old.columns)
 
+        # ===== HEADER =====
+        cols = list(df_old.columns)
         if len(cols) > 27:
             cols[27] = "Tình trạng"
-
         df_old.columns = cols
 
-        # ===== EXPORT =====
+        # ===== EXPORT FILE =====
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         path = tmp.name
         tmp.close()
@@ -249,7 +257,14 @@ def dongbo():
 
         wb.save(path)
 
-        return send_file(path, as_attachment=True, download_name="result.xlsx")
+        # ===== RETURN BASE64 =====
+        with open(path, "rb") as f:
+            encoded = base64.b64encode(f.read()).decode()
+
+        return jsonify({
+            "file": encoded,
+            "filename": "result.xlsx"
+        })
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
