@@ -1,122 +1,115 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, send_file, jsonify
 import pandas as pd
 from datetime import datetime
 import tempfile
+import os
 import base64
 import io
 from openpyxl import load_workbook
 
 app = Flask(__name__)
 
-# ================= CLEAN KEY =================
+# ====================== CÁC HÀM HỖ TRỢ ======================
+
 def clean_key(val):
     if val is None:
         return ""
     s = str(val).strip()
-
     if s.endswith(".0"):
         s = s[:-2]
-
     try:
         if "E" in s or "e" in s:
             s = str(int(float(s)))
     except:
         pass
-
     return s
 
 
-# ================= DATE =================
 def parse_date(val):
-    if val is None:
+    if val is None or str(val).strip() == "":
         return None
-
     s = str(val).strip()
-    if s == "":
-        return None
 
-    try:
-        return datetime.strptime(s, "%d/%m/%Y")
-    except:
-        pass
+    # Thử định dạng Việt Nam
+    for fmt in ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"]:
+        try:
+            return datetime.strptime(s, fmt)
+        except:
+            continue
 
+    # Excel serial date
     try:
         d = pd.to_datetime(val, origin='1899-12-30', unit='D', errors='coerce')
-        if pd.isna(d):
-            return None
-        return d.to_pydatetime()
+        if not pd.isna(d):
+            return d.to_pydatetime()
     except:
         pass
 
+    # Fallback
     try:
-        d = pd.to_datetime(val, errors="coerce")
-        if pd.isna(d):
-            return None
-        return d.to_pydatetime()
+        d = pd.to_datetime(val, errors='coerce')
+        if not pd.isna(d):
+            return d.to_pydatetime()
     except:
-        return None
+        pass
+    return None
 
 
 def safe_format(d):
     return d.strftime("%d/%m/%Y") if d else ""
 
 
-# ================= BASE64 TO DATAFRAME =================
-def read_excel_base64(b64_string):
-    file_bytes = base64.b64decode(b64_string)
-    return pd.read_excel(io.BytesIO(file_bytes), dtype=str).fillna("")
-
-
-# ================= COUNT / HISTORY =================
 def fix_serial_date(text):
     if not text:
         return ""
-
     parts = str(text).split(";")
     result = []
-
     for p in parts:
         d = parse_date(p.strip())
-        val = d.strftime("%d/%m/%Y") if d else p.strip()
-
+        val = safe_format(d) if d else p.strip()
         if val and val not in result:
             result.append(val)
-
     return "; ".join(result)
 
 
 def count_gia_han(text):
     if not text:
-        return ""
+        return "0"
     return str(len([x for x in text.split(";") if x.strip()]))
 
 
-# ================= API =================
+def ensure_columns(df, total_cols):
+    if df.shape[1] < total_cols:
+        for i in range(df.shape[1], total_cols):
+            df[i] = ""
+    return df
+
+
+# ====================== API NHẬN BASE64 ======================
 @app.route("/dongbo", methods=["POST"])
 def dongbo():
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({"error": "Không nhận được dữ liệu JSON"}), 400
 
-        file_old_b64 = data["file_old"]
-        file_new_b64 = data["file_new"]
-        file_map_b64 = data.get("file_map")
+        file_old_b64 = data.get("file_old")
+        file_new_b64 = data.get("file_new")
+        file_map_b64 = data.get("file_map")  # optional
 
-        # ===== READ EXCEL FROM BASE64 =====
-        df_old = read_excel_base64(file_old_b64)
-        df_new = read_excel_base64(file_new_b64)
+        if not file_old_b64 or not file_new_b64:
+            return jsonify({"error": "Thiếu file_old hoặc file_new (Base64)"}), 400
 
-        if file_map_b64:
-            df_map = read_excel_base64(file_map_b64)
-        else:
-            df_map = None
+        # Hàm chuyển Base64 sang DataFrame
+        def b64_to_df(b64_string, skiprows=0):
+            file_bytes = base64.b64decode(b64_string)
+            df = pd.read_excel(io.BytesIO(file_bytes), dtype=str, skiprows=skiprows).fillna("")
+            return df
 
-        # ===== SKIP HEADER NEW =====
-        df_new = df_new.iloc[9:].reset_index(drop=True)
+        df_old = b64_to_df(file_old_b64)
+        df_new = b64_to_df(file_new_b64, skiprows=9)   # Skip 9 dòng đầu file new
 
-        # ===== FIX SIZE =====
-        if df_old.shape[1] < 28:
-            for i in range(df_old.shape[1], 28):
-                df_old[i] = ""
+        df_old = ensure_columns(df_old, 28)
 
         COL_OLD_ID = 9
         COL_NEW_ID = 11
@@ -124,7 +117,6 @@ def dongbo():
         dict_all = {}
         dict_new_only = {}
 
-        # ===== NEW MAP =====
         for i in range(len(df_new)):
             key = clean_key(df_new.iloc[i, COL_NEW_ID])
             if key:
@@ -133,10 +125,9 @@ def dongbo():
 
         rows_keep = [0]
 
-        # ===== UPDATE =====
+        # === UPDATE EXISTING ===
         for i in reversed(range(1, len(df_old))):
             colID = clean_key(df_old.iloc[i, COL_OLD_ID])
-
             if colID in dict_all:
                 rNew = dict_all[colID]
 
@@ -163,7 +154,6 @@ def dongbo():
                         arr.append(val)
 
                 lichSuCu = "; ".join(arr)
-
                 df_old.iloc[i, 20] = "'" + lichSuCu if lichSuCu else ""
                 df_old.iloc[i, 19] = count_gia_han(lichSuCu)
 
@@ -172,12 +162,10 @@ def dongbo():
 
         df_old = df_old.iloc[rows_keep].reset_index(drop=True)
 
-        # ===== ADD NEW =====
+        # === ADD NEW RECORDS ===
         new_rows = []
-
         for colID, rNew in dict_new_only.items():
             row = [""] * 28
-
             row[1] = df_new.iloc[rNew, 3]
             row[2] = df_new.iloc[rNew, 4]
             row[3] = df_new.iloc[rNew, 5]
@@ -189,7 +177,6 @@ def dongbo():
 
             if ngayMuon:
                 row[12] = "'" + safe_format(ngayMuon)
-
             row[14] = df_new.iloc[rNew, 15]
 
             ngayTra = parse_date(df_new.iloc[rNew, 19])
@@ -201,7 +188,6 @@ def dongbo():
 
             valX = str(df_new.iloc[rNew, 23])
             row[24] = "'" + valX.zfill(10) if valX.isdigit() else valX
-
             row[19] = count_gia_han(str(row[20]).replace("'", ""))
 
             new_rows.append(row)
@@ -210,10 +196,10 @@ def dongbo():
             df_add = pd.DataFrame(new_rows, columns=df_old.columns)
             df_old = pd.concat([df_old, df_add], ignore_index=True)
 
-        # ===== MAP =====
-        if df_map is not None:
+        # === MAP FILE (nếu có) ===
+        if file_map_b64:
+            df_map = b64_to_df(file_map_b64)
             dict_map = {}
-
             for i in range(len(df_map)):
                 key = clean_key(df_map.iloc[i, 2])
                 if key:
@@ -226,31 +212,34 @@ def dongbo():
                     df_old.iloc[i, 26] = df_map.iloc[rMap, 3]
                     df_old.iloc[i, 25] = df_map.iloc[rMap, 4]
 
-        # ===== OVERDUE =====
+        # === TÌNH TRẠNG QUÁ HẠN ===
         today = datetime.today()
-
         for i in range(len(df_old)):
             d = parse_date(df_old.iloc[i, 18])
             df_old.iloc[i, 27] = "Qua han" if d and d < today else "Chua qua han"
 
-        # ===== EXPORT =====
+        # Đặt tên cột
+        cols = list(df_old.columns)
+        if len(cols) > 27:
+            cols[27] = "Tình trạng"
+        df_old.columns = cols
+
+        # ====================== EXPORT ======================
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         path = tmp.name
         tmp.close()
 
         df_old.to_excel(path, index=False, engine="openpyxl")
 
+        # Hide columns
         wb = load_workbook(path)
         ws = wb.active
-
-        for col in ["A","G","H","I","K","L","N","P","Q","R","V","W","X"]:
+        cols_hide = ["A", "G", "H", "I", "K", "L", "N", "P", "Q", "R", "V", "W", "X"]
+        for col in cols_hide:
             ws.column_dimensions[col].hidden = True
-
         wb.save(path)
 
-        return jsonify({
-            "file": base64.b64encode(open(path, "rb").read()).decode("utf-8")
-        })
+        return send_file(path, as_attachment=True, download_name="KetQua_DongBo.xlsx")
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
