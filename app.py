@@ -8,7 +8,7 @@ from openpyxl import load_workbook
 
 app = Flask(__name__)
 
-# ===== CLEAN KEY =====
+# ================= CLEAN KEY =================
 def clean_key(val):
     if val is None:
         return ""
@@ -26,7 +26,7 @@ def clean_key(val):
     return s
 
 
-# ===== DATE =====
+# ================= DATE =================
 def parse_date(val):
     if val is None:
         return None
@@ -61,7 +61,13 @@ def safe_format(d):
     return d.strftime("%d/%m/%Y") if d else ""
 
 
-# ===== HISTORY =====
+# ================= BASE64 TO DATAFRAME =================
+def read_excel_base64(b64_string):
+    file_bytes = base64.b64decode(b64_string)
+    return pd.read_excel(io.BytesIO(file_bytes), dtype=str).fillna("")
+
+
+# ================= COUNT / HISTORY =================
 def fix_serial_date(text):
     if not text:
         return ""
@@ -85,35 +91,32 @@ def count_gia_han(text):
     return str(len([x for x in text.split(";") if x.strip()]))
 
 
-# ===== ENSURE COL =====
-def ensure_columns(df, total_cols):
-    if df.shape[1] < total_cols:
-        for i in range(df.shape[1], total_cols):
-            df[i] = ""
-    return df
-
-
+# ================= API =================
 @app.route("/dongbo", methods=["POST"])
 def dongbo():
     try:
         data = request.get_json()
 
-        # ===== DECODE FILE =====
-        file_old = io.BytesIO(base64.b64decode(data['file_old']))
-        file_new = io.BytesIO(base64.b64decode(data['file_new']))
+        file_old_b64 = data["file_old"]
+        file_new_b64 = data["file_new"]
+        file_map_b64 = data.get("file_map")
 
-        file_map = None
-        if data.get("file_map"):
-            file_map = io.BytesIO(base64.b64decode(data['file_map']))
+        # ===== READ EXCEL FROM BASE64 =====
+        df_old = read_excel_base64(file_old_b64)
+        df_new = read_excel_base64(file_new_b64)
 
-        # ===== READ =====
-        df_old = pd.read_excel(file_old, dtype=str).fillna("")
-        df_new = pd.read_excel(file_new, dtype=str).fillna("")
+        if file_map_b64:
+            df_map = read_excel_base64(file_map_b64)
+        else:
+            df_map = None
 
-        # 🔥 SKIP 9 DÒNG FILE NEW
+        # ===== SKIP HEADER NEW =====
         df_new = df_new.iloc[9:].reset_index(drop=True)
 
-        df_old = ensure_columns(df_old, 28)
+        # ===== FIX SIZE =====
+        if df_old.shape[1] < 28:
+            for i in range(df_old.shape[1], 28):
+                df_old[i] = ""
 
         COL_OLD_ID = 9
         COL_NEW_ID = 11
@@ -121,7 +124,7 @@ def dongbo():
         dict_all = {}
         dict_new_only = {}
 
-        # ===== LOAD NEW =====
+        # ===== NEW MAP =====
         for i in range(len(df_new)):
             key = clean_key(df_new.iloc[i, COL_NEW_ID])
             if key:
@@ -132,11 +135,9 @@ def dongbo():
 
         # ===== UPDATE =====
         for i in reversed(range(1, len(df_old))):
-
             colID = clean_key(df_old.iloc[i, COL_OLD_ID])
 
             if colID in dict_all:
-
                 rNew = dict_all[colID]
 
                 df_old.iloc[i, 1] = df_new.iloc[rNew, 3]
@@ -175,7 +176,6 @@ def dongbo():
         new_rows = []
 
         for colID, rNew in dict_new_only.items():
-
             row = [""] * 28
 
             row[1] = df_new.iloc[rNew, 3]
@@ -211,8 +211,7 @@ def dongbo():
             df_old = pd.concat([df_old, df_add], ignore_index=True)
 
         # ===== MAP =====
-        if file_map:
-            df_map = pd.read_excel(file_map, dtype=str).fillna("")
+        if df_map is not None:
             dict_map = {}
 
             for i in range(len(df_map)):
@@ -227,43 +226,30 @@ def dongbo():
                     df_old.iloc[i, 26] = df_map.iloc[rMap, 3]
                     df_old.iloc[i, 25] = df_map.iloc[rMap, 4]
 
-        # ===== QUÁ HẠN =====
+        # ===== OVERDUE =====
         today = datetime.today()
+
         for i in range(len(df_old)):
             d = parse_date(df_old.iloc[i, 18])
             df_old.iloc[i, 27] = "Qua han" if d and d < today else "Chua qua han"
 
-        # ===== HEADER =====
-        cols = list(df_old.columns)
-        if len(cols) > 27:
-            cols[27] = "Tình trạng"
-        df_old.columns = cols
-
-        # ===== EXPORT FILE =====
+        # ===== EXPORT =====
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         path = tmp.name
         tmp.close()
 
         df_old.to_excel(path, index=False, engine="openpyxl")
 
-        # ===== HIDE COLUMN =====
         wb = load_workbook(path)
         ws = wb.active
 
-        cols_hide = ["A", "G", "H", "I", "K", "L", "N", "P", "Q", "R", "V", "W", "X"]
-
-        for col in cols_hide:
+        for col in ["A","G","H","I","K","L","N","P","Q","R","V","W","X"]:
             ws.column_dimensions[col].hidden = True
 
         wb.save(path)
 
-        # ===== RETURN BASE64 =====
-        with open(path, "rb") as f:
-            encoded = base64.b64encode(f.read()).decode()
-
         return jsonify({
-            "file": encoded,
-            "filename": "result.xlsx"
+            "file": base64.b64encode(open(path, "rb").read()).decode("utf-8")
         })
 
     except Exception as e:
