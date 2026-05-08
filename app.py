@@ -2,14 +2,16 @@ from flask import Flask, request, jsonify, send_file
 import pandas as pd
 from datetime import datetime
 from io import BytesIO
+from openpyxl.utils import get_column_letter
 import base64
-from openpyxl import load_workbook
 import traceback
 
 app = Flask(__name__)
 
-# ===== MAX SIZE =====
-app.config['MAX_CONTENT_LENGTH'] = 30 * 1024 * 1024
+# =========================================================
+# CONFIG
+# =========================================================
+app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 
 
 # =========================================================
@@ -20,13 +22,18 @@ def base64_to_file(base64_string):
     if not base64_string:
         return None
 
-    # remove data:...base64,
-    if "," in base64_string:
-        base64_string = base64_string.split(",")[1]
+    try:
 
-    file_bytes = base64.b64decode(base64_string)
+        # remove data:application/...
+        if "," in base64_string:
+            base64_string = base64_string.split(",")[1]
 
-    return BytesIO(file_bytes)
+        file_bytes = base64.b64decode(base64_string)
+
+        return BytesIO(file_bytes)
+
+    except Exception:
+        return None
 
 
 # =========================================================
@@ -70,6 +77,7 @@ def parse_date(val):
 
             return d.to_pydatetime()
 
+        # normal date
         d = pd.to_datetime(
             str(val),
             dayfirst=True,
@@ -81,7 +89,7 @@ def parse_date(val):
 
         return d.to_pydatetime()
 
-    except:
+    except Exception:
         return None
 
 
@@ -159,6 +167,9 @@ def dongbo():
 
     try:
 
+        # =================================================
+        # GET JSON
+        # =================================================
         data = request.get_json()
 
         if not data:
@@ -187,10 +198,22 @@ def dongbo():
             }), 400
 
         # =================================================
-        # CONVERT
+        # CONVERT TO MEMORY FILE
         # =================================================
         file_old = base64_to_file(file_old_b64)
         file_new = base64_to_file(file_new_b64)
+
+        if not file_old:
+            return jsonify({
+                "success": False,
+                "error": "Invalid file_old"
+            }), 400
+
+        if not file_new:
+            return jsonify({
+                "success": False,
+                "error": "Invalid file_new"
+            }), 400
 
         file_map = None
 
@@ -202,6 +225,10 @@ def dongbo():
         # =================================================
         df_old = pd.read_excel(file_old).fillna("")
         df_new = pd.read_excel(file_new).fillna("")
+
+        # reset column index
+        df_old.columns = range(df_old.shape[1])
+        df_new.columns = range(df_new.shape[1])
 
         if df_old.empty:
             return jsonify({
@@ -216,7 +243,7 @@ def dongbo():
             }), 400
 
         # =================================================
-        # SKIP 9 ROW
+        # SKIP 9 ROW FILE NEW
         # =================================================
         df_new = df_new.iloc[9:].reset_index(drop=True)
 
@@ -236,7 +263,7 @@ def dongbo():
             }), 400
 
         # =================================================
-        # LOAD NEW
+        # LOAD NEW DICT
         # =================================================
         dict_all = {}
         dict_new_only = {}
@@ -253,7 +280,7 @@ def dongbo():
                 dict_new_only[key] = i
 
         # =================================================
-        # UPDATE
+        # UPDATE EXISTING
         # =================================================
         rows_keep = []
 
@@ -270,44 +297,57 @@ def dongbo():
 
             new_row = df_new.iloc[rNew]
 
-            # =========================
+            # =============================================
             # BASIC
-            # =========================
-            df_old.iloc[i, 1] = new_row[3]
-            df_old.iloc[i, 2] = new_row[4]
-            df_old.iloc[i, 3] = new_row[5]
-            df_old.iloc[i, 4] = new_row[6]
+            # =============================================
+            df_old.iloc[i, 1] = new_row.iloc[3]
+            df_old.iloc[i, 2] = new_row.iloc[4]
+            df_old.iloc[i, 3] = new_row.iloc[5]
+            df_old.iloc[i, 4] = new_row.iloc[6]
 
-            # =========================
+            # =============================================
             # DATE
-            # =========================
-            ngayMuon = parse_date(new_row[14])
-            ngayGiaHan = parse_date(new_row[20])
+            # =============================================
+            ngayMuon = parse_date(
+                new_row.iloc[14]
+            )
+
+            ngayGiaHan = parse_date(
+                new_row.iloc[20]
+            )
 
             if ngayMuon:
                 df_old.iloc[i, 12] = (
                     "'" + safe_format(ngayMuon)
                 )
             else:
-                df_old.iloc[i, 12] = str(new_row[14])
+                df_old.iloc[i, 12] = str(
+                    new_row.iloc[14]
+                )
 
-            df_old.iloc[i, 14] = new_row[15]
+            df_old.iloc[i, 14] = new_row.iloc[15]
 
-            ngayTra = parse_date(new_row[19])
+            ngayTra = parse_date(
+                new_row.iloc[19]
+            )
 
             if ngayTra:
-                df_old.iloc[i, 18] = safe_format(ngayTra)
+                df_old.iloc[i, 18] = safe_format(
+                    ngayTra
+                )
             else:
                 df_old.iloc[i, 18] = ""
 
-            # =========================
+            # =============================================
             # HISTORY
-            # =========================
+            # =============================================
             lichSuCu = str(
                 df_old.iloc[i, 20]
             ).replace("'", "")
 
-            lichSuCu = fix_serial_date(lichSuCu)
+            lichSuCu = fix_serial_date(
+                lichSuCu
+            )
 
             arr = [
                 x.strip()
@@ -318,10 +358,13 @@ def dongbo():
             if (
                 ngayGiaHan and
                 ngayMuon and
-                safe_format(ngayGiaHan) != safe_format(ngayMuon)
+                safe_format(ngayGiaHan)
+                != safe_format(ngayMuon)
             ):
 
-                val = safe_format(ngayGiaHan)
+                val = safe_format(
+                    ngayGiaHan
+                )
 
                 if val not in arr:
                     arr.append(val)
@@ -329,7 +372,9 @@ def dongbo():
             lichSuCu = "; ".join(arr)
 
             if lichSuCu:
-                df_old.iloc[i, 20] = "'" + lichSuCu
+                df_old.iloc[i, 20] = (
+                    "'" + lichSuCu
+                )
             else:
                 df_old.iloc[i, 20] = ""
 
@@ -337,12 +382,15 @@ def dongbo():
                 lichSuCu
             )
 
-            dict_new_only.pop(colID, None)
+            dict_new_only.pop(
+                colID,
+                None
+            )
 
             rows_keep.append(i)
 
         # =================================================
-        # KEEP ROW
+        # KEEP MATCHED ROWS
         # =================================================
         if rows_keep:
 
@@ -351,7 +399,7 @@ def dongbo():
             ].reset_index(drop=True)
 
         # =================================================
-        # ADD NEW
+        # ADD NEW ROWS
         # =================================================
         new_rows = []
 
@@ -361,46 +409,63 @@ def dongbo():
 
             new_row = df_new.iloc[rNew]
 
-            row[1] = new_row[3]
-            row[2] = new_row[4]
-            row[3] = new_row[5]
-            row[4] = new_row[6]
-            row[9] = new_row[11]
+            row[1] = new_row.iloc[3]
+            row[2] = new_row.iloc[4]
+            row[3] = new_row.iloc[5]
+            row[4] = new_row.iloc[6]
+            row[9] = new_row.iloc[11]
 
-            # =========================
+            # =============================================
             # DATE
-            # =========================
-            ngayMuon = parse_date(new_row[14])
+            # =============================================
+            ngayMuon = parse_date(
+                new_row.iloc[14]
+            )
 
             if ngayMuon:
-                row[12] = "'" + safe_format(ngayMuon)
+                row[12] = (
+                    "'" + safe_format(ngayMuon)
+                )
 
-            row[14] = new_row[15]
+            row[14] = new_row.iloc[15]
 
-            ngayTra = parse_date(new_row[19])
+            ngayTra = parse_date(
+                new_row.iloc[19]
+            )
 
             if ngayTra:
-                row[18] = safe_format(ngayTra)
+                row[18] = safe_format(
+                    ngayTra
+                )
 
-            ngayGiaHan = parse_date(new_row[20])
+            ngayGiaHan = parse_date(
+                new_row.iloc[20]
+            )
 
             if (
                 ngayGiaHan and
                 ngayMuon and
-                safe_format(ngayGiaHan) != safe_format(ngayMuon)
+                safe_format(ngayGiaHan)
+                != safe_format(ngayMuon)
             ):
 
-                row[20] = "'" + safe_format(
-                    ngayGiaHan
+                row[20] = (
+                    "'" + safe_format(
+                        ngayGiaHan
+                    )
                 )
 
-            # =========================
+            # =============================================
             # STT
-            # =========================
-            valX = str(new_row[23])
+            # =============================================
+            valX = str(
+                new_row.iloc[23]
+            )
 
             if valX.isdigit():
-                row[24] = "'" + valX.zfill(10)
+                row[24] = (
+                    "'" + valX.zfill(10)
+                )
             else:
                 row[24] = valX
 
@@ -426,13 +491,17 @@ def dongbo():
             )
 
         # =================================================
-        # MAP
+        # MAP FILE
         # =================================================
         if file_map:
 
             df_map = pd.read_excel(
                 file_map
             ).fillna("")
+
+            df_map.columns = range(
+                df_map.shape[1]
+            )
 
             dict_map = {}
 
@@ -442,7 +511,11 @@ def dongbo():
                     df_map.iloc[i, 2]
                 )
 
-                if key and key not in dict_map:
+                if (
+                    key and
+                    key not in dict_map
+                ):
+
                     dict_map[key] = i
 
             for i in range(len(df_old)):
@@ -456,11 +529,16 @@ def dongbo():
 
                 rMap = dict_map[key]
 
-                df_old.iloc[i, 26] = df_map.iloc[rMap, 3]
-                df_old.iloc[i, 25] = df_map.iloc[rMap, 4]
+                df_old.iloc[i, 26] = (
+                    df_map.iloc[rMap, 3]
+                )
+
+                df_old.iloc[i, 25] = (
+                    df_map.iloc[rMap, 4]
+                )
 
         # =================================================
-        # QUA HAN
+        # OVERDUE
         # =================================================
         today = datetime.today().date()
 
@@ -516,43 +594,53 @@ def dongbo():
             ]
 
             for col in cols_hide:
-                ws.column_dimensions[col].hidden = True
+                ws.column_dimensions[
+                    col
+                ].hidden = True
 
             # =============================================
             # AUTO WIDTH
             # =============================================
-            for col in ws.columns:
+            for col_idx, col_cells in enumerate(
+                ws.columns,
+                1
+            ):
 
-                max_len = 0
+                max_length = 0
 
-                col_letter = col[0].column_letter
-
-                for cell in col:
+                for cell in col_cells:
 
                     try:
 
-                        val = str(cell.value)
+                        if cell.value:
 
-                        if len(val) > max_len:
-                            max_len = len(val)
+                            max_length = max(
+                                max_length,
+                                len(str(cell.value))
+                            )
 
-                    except:
+                    except Exception:
                         pass
 
+                adjusted_width = min(
+                    max_length + 2,
+                    40
+                )
+
                 ws.column_dimensions[
-                    col_letter
-                ].width = min(max_len + 2, 40)
+                    get_column_letter(col_idx)
+                ].width = adjusted_width
 
         output.seek(0)
 
         # =================================================
-        # RETURN BINARY FILE
+        # RETURN EXCEL
         # =================================================
         return send_file(
             output,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             as_attachment=True,
-            download_name="result.xlsx",
-            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            download_name="result.xlsx"
         )
 
     except Exception as e:
