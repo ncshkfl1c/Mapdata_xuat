@@ -1,44 +1,15 @@
 from flask import Flask, request, jsonify
-from openpyxl import load_workbook
+import pandas as pd
 from datetime import datetime
-from io import BytesIO
 import tempfile
+from openpyxl import load_workbook
 import base64
-import traceback
+import os
 
 app = Flask(__name__)
 
-# =========================================================
-# CONFIG
-# =========================================================
-app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
-
-# =========================================================
-# BASE64
-# =========================================================
-def b64_to_file(b64):
-
-    if not b64:
-        return None
-
-    try:
-
-        if "," in b64:
-            b64 = b64.split(",")[1]
-
-        return BytesIO(
-            base64.b64decode(b64)
-        )
-
-    except:
-        return None
-
-
-# =========================================================
-# CLEAN KEY
-# =========================================================
+# ===== CLEAN KEY =====
 def clean_key(val):
-
     if val is None:
         return ""
 
@@ -48,570 +19,343 @@ def clean_key(val):
         s = s[:-2]
 
     try:
-
         if "E" in s or "e" in s:
             s = str(int(float(s)))
-
     except:
         pass
 
     return s
 
 
-# =========================================================
-# DATE
-# =========================================================
+# ===== DATE =====
 def parse_date(val):
-
     if val is None:
         return None
-
-    if isinstance(val, datetime):
-        return val
 
     s = str(val).strip()
 
     if s == "":
         return None
 
-    # =====================================================
     # dd/mm/yyyy
-    # =====================================================
     try:
+        return datetime.strptime(s, "%d/%m/%Y")
+    except:
+        pass
 
-        return datetime.strptime(
-            s,
-            "%d/%m/%Y"
-        )
+    # Excel serial
+    try:
+        d = pd.to_datetime(val, origin='1899-12-30', unit='D', errors='coerce')
+
+        if pd.isna(d):
+            return None
+
+        return d.to_pydatetime()
 
     except:
         pass
 
-    # =====================================================
-    # EXCEL SERIAL
-    # =====================================================
+    # auto parse
     try:
+        d = pd.to_datetime(val, errors="coerce")
 
-        num = float(s)
+        if pd.isna(d):
+            return None
 
-        if num > 30000:
-
-            return datetime(
-                1899,
-                12,
-                30
-            ) + timedelta(days=num)
+        return d.to_pydatetime()
 
     except:
-        pass
-
-    return None
+        return None
 
 
 def safe_format(d):
+    return d.strftime("%d/%m/%Y") if d else ""
 
-    if not d:
+
+# ===== HISTORY =====
+def fix_serial_date(text):
+
+    if not text:
         return ""
 
-    return d.strftime("%d/%m/%Y")
+    parts = str(text).split(";")
+
+    result = []
+
+    for p in parts:
+
+        d = parse_date(p.strip())
+
+        val = d.strftime("%d/%m/%Y") if d else p.strip()
+
+        if val and val not in result:
+            result.append(val)
+
+    return "; ".join(result)
 
 
-# =========================================================
-# COUNT
-# =========================================================
 def count_gia_han(text):
 
     if not text:
         return ""
 
-    arr = str(text).split(";")
-
-    count = 0
-
-    for x in arr:
-
-        if str(x).strip():
-            count += 1
-
-    return str(count)
+    return str(len([x for x in text.split(";") if x.strip()]))
 
 
-# =========================================================
-# HISTORY
-# =========================================================
-def normalize_history(text):
+# ===== ENSURE COL =====
+def ensure_columns(df, total_cols):
 
-    if not text:
-        return ""
+    if df.shape[1] < total_cols:
 
-    text = str(text).replace("'", "").strip()
+        for i in range(df.shape[1], total_cols):
+            df[i] = ""
 
-    arr = []
-
-    for x in text.split(";"):
-
-        x = x.strip()
-
-        if not x:
-            continue
-
-        d = parse_date(x)
-
-        if d:
-            val = safe_format(d)
-        else:
-            val = x
-
-        if val not in arr:
-            arr.append(val)
-
-    return "; ".join(arr)
+    return df
 
 
-# =========================================================
-# HOME
-# =========================================================
-@app.route("/", methods=["GET"])
-def home():
+# ===== BASE64 TO TEMP FILE =====
+def save_base64_file(base64_string, suffix=".xlsx"):
 
-    return jsonify({
-        "success": True,
-        "message": "API RUNNING"
-    })
+    # remove prefix nếu có
+    if "," in base64_string:
+        base64_string = base64_string.split(",")[1]
+
+    file_data = base64.b64decode(base64_string)
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+
+    tmp.write(file_data)
+    tmp.close()
+
+    return tmp.name
 
 
-# =========================================================
-# API
-# =========================================================
 @app.route("/dongbo", methods=["POST"])
 def dongbo():
 
     try:
 
-        # =================================================
-        # JSON
-        # =================================================
-        data = request.get_json()
+        data = request.json
 
-        if not data:
+        # ===== GET BASE64 =====
+        file_old_b64 = data.get("file_old")
+        file_new_b64 = data.get("file_new")
+        file_map_b64 = data.get("file_map")
 
+        if not file_old_b64 or not file_new_b64:
             return jsonify({
-                "success": False,
-                "error": "Missing JSON"
+                "error": "Thiếu file_old hoặc file_new"
             }), 400
 
-        # =================================================
-        # FILES
-        # =================================================
-        file_old = b64_to_file(
-            data.get("file_old")
-        )
+        # ===== SAVE TEMP =====
+        path_old = save_base64_file(file_old_b64)
+        path_new = save_base64_file(file_new_b64)
 
-        file_new = b64_to_file(
-            data.get("file_new")
-        )
+        path_map = None
 
-        file_map = b64_to_file(
-            data.get("file_map")
-        )
+        if file_map_b64:
+            path_map = save_base64_file(file_map_b64)
 
-        if not file_old:
+        # ===== READ EXCEL =====
+        df_old = pd.read_excel(path_old, dtype=str).fillna("")
+        df_new = pd.read_excel(path_new, dtype=str).fillna("")
 
-            return jsonify({
-                "success": False,
-                "error": "Missing file_old"
-            }), 400
+        # skip 9 dòng
+        df_new = df_new.iloc[9:].reset_index(drop=True)
 
-        if not file_new:
+        df_old = ensure_columns(df_old, 28)
 
-            return jsonify({
-                "success": False,
-                "error": "Missing file_new"
-            }), 400
+        COL_OLD_ID = 9
+        COL_NEW_ID = 11
 
-        # =================================================
-        # LOAD WORKBOOK
-        # =================================================
-        wb_old = load_workbook(file_old)
-        ws_old = wb_old.active
-
-        wb_new = load_workbook(file_new)
-        ws_new = wb_new.active
-
-        wb_map = None
-        ws_map = None
-
-        if file_map:
-
-            wb_map = load_workbook(file_map)
-            ws_map = wb_map.active
-
-        # =================================================
-        # CONSTANT
-        # =================================================
-        START_NEW = 10
-        START_OLD = 2
-
-        # =================================================
-        # DICT NEW
-        # =================================================
         dict_all = {}
         dict_new_only = {}
 
-        last_new = ws_new.max_row
+        # ===== LOAD NEW =====
+        for i in range(len(df_new)):
 
-        for r in range(START_NEW, last_new + 1):
-
-            key = clean_key(
-                ws_new[f"L{r}"].value
-            )
+            key = clean_key(df_new.iloc[i, COL_NEW_ID])
 
             if key:
+                dict_all[key] = i
+                dict_new_only[key] = i
 
-                dict_all[key] = r
-                dict_new_only[key] = r
+        rows_keep = [0]
 
-        # =================================================
-        # UPDATE OLD
-        # =================================================
-        last_old = ws_old.max_row
+        # ===== UPDATE =====
+        for i in reversed(range(1, len(df_old))):
 
-        rows_delete = []
-
-        for r in range(
-            last_old,
-            START_OLD - 1,
-            -1
-        ):
-
-            colID = clean_key(
-                ws_old[f"J{r}"].value
-            )
+            colID = clean_key(df_old.iloc[i, COL_OLD_ID])
 
             if colID in dict_all:
 
                 rNew = dict_all[colID]
 
-                # =========================================
-                # BASIC
-                # =========================================
-                ws_old[f"B{r}"] = ws_new[f"D{rNew}"].value
-                ws_old[f"C{r}"] = ws_new[f"E{rNew}"].value
-                ws_old[f"D{r}"] = ws_new[f"F{rNew}"].value
-                ws_old[f"E{r}"] = ws_new[f"G{rNew}"].value
+                df_old.iloc[i, 1] = df_new.iloc[rNew, 3]
+                df_old.iloc[i, 2] = df_new.iloc[rNew, 4]
+                df_old.iloc[i, 3] = df_new.iloc[rNew, 5]
+                df_old.iloc[i, 4] = df_new.iloc[rNew, 6]
 
-                # =========================================
-                # M
-                # =========================================
-                ngayMuon = parse_date(
-                    ws_new[f"O{rNew}"].value
-                )
+                ngayMuon = parse_date(df_new.iloc[rNew, 14])
+                ngayGiaHan = parse_date(df_new.iloc[rNew, 20])
 
-                if ngayMuon:
+                df_old.iloc[i, 12] = "'" + safe_format(ngayMuon) if ngayMuon else df_new.iloc[rNew, 14]
 
-                    ws_old[f"M{r}"] = safe_format(
-                        ngayMuon
-                    )
+                df_old.iloc[i, 14] = df_new.iloc[rNew, 15]
 
-                else:
+                df_old.iloc[i, 18] = safe_format(parse_date(df_new.iloc[rNew, 19]))
 
-                    ws_old[f"M{r}"] = (
-                        ws_new[f"O{rNew}"].value
-                    )
+                lichSuCu = str(df_old.iloc[i, 20]).replace("'", "")
+                lichSuCu = fix_serial_date(lichSuCu)
 
-                # =========================================
-                # O
-                # =========================================
-                ws_old[f"O{r}"] = (
-                    ws_new[f"P{rNew}"].value
-                )
+                arr = [x.strip() for x in lichSuCu.split(";") if x.strip()]
 
-                # =========================================
-                # S
-                # =========================================
-                ngayTra = parse_date(
-                    ws_new[f"T{rNew}"].value
-                )
+                if ngayGiaHan and ngayMuon and ngayGiaHan != ngayMuon:
 
-                if ngayTra:
-
-                    ws_old[f"S{r}"] = safe_format(
-                        ngayTra
-                    )
-
-                else:
-
-                    ws_old[f"S{r}"] = (
-                        ws_new[f"T{rNew}"].value
-                    )
-
-                # =========================================
-                # U
-                # =========================================
-                ngayGiaHan = parse_date(
-                    ws_new[f"U{rNew}"].value
-                )
-
-                lichSuCu = normalize_history(
-                    ws_old[f"U{r}"].value
-                )
-
-                arr = []
-
-                if lichSuCu:
-
-                    arr = [
-                        x.strip()
-                        for x in lichSuCu.split(";")
-                        if x.strip()
-                    ]
-
-                if (
-                    ngayGiaHan and
-                    ngayMuon and
-                    safe_format(ngayGiaHan)
-                    !=
-                    safe_format(ngayMuon)
-                ):
-
-                    val = safe_format(
-                        ngayGiaHan
-                    )
+                    val = safe_format(ngayGiaHan)
 
                     if val not in arr:
                         arr.append(val)
 
                 lichSuCu = "; ".join(arr)
 
-                ws_old[f"U{r}"] = lichSuCu
+                df_old.iloc[i, 20] = "'" + lichSuCu if lichSuCu else ""
 
-                # =========================================
-                # T
-                # =========================================
-                ws_old[f"T{r}"] = count_gia_han(
-                    lichSuCu
-                )
+                df_old.iloc[i, 19] = count_gia_han(lichSuCu)
 
-                # =========================================
-                # REMOVE
-                # =========================================
-                dict_new_only.pop(
-                    colID,
-                    None
-                )
+                dict_new_only.pop(colID, None)
 
-            else:
+                rows_keep.append(i)
 
-                rows_delete.append(r)
+        df_old = df_old.iloc[rows_keep].reset_index(drop=True)
 
-        # =================================================
-        # DELETE ROW
-        # =================================================
-        for r in rows_delete:
+        # ===== ADD NEW =====
+        new_rows = []
 
-            ws_old.delete_rows(r)
-
-        # =================================================
-        # ADD NEW
-        # =================================================
         for colID, rNew in dict_new_only.items():
 
-            newRow = ws_old.max_row + 1
+            row = [""] * 28
 
-            # =============================================
-            # BASIC
-            # =============================================
-            ws_old[f"B{newRow}"] = ws_new[f"D{rNew}"].value
-            ws_old[f"C{newRow}"] = ws_new[f"E{rNew}"].value
-            ws_old[f"D{newRow}"] = ws_new[f"F{rNew}"].value
-            ws_old[f"E{newRow}"] = ws_new[f"G{rNew}"].value
-            ws_old[f"J{newRow}"] = ws_new[f"L{rNew}"].value
+            row[1] = df_new.iloc[rNew, 3]
+            row[2] = df_new.iloc[rNew, 4]
+            row[3] = df_new.iloc[rNew, 5]
+            row[4] = df_new.iloc[rNew, 6]
 
-            # =============================================
-            # M
-            # =============================================
-            ngayMuon = parse_date(
-                ws_new[f"O{rNew}"].value
-            )
+            row[9] = df_new.iloc[rNew, 11]
+
+            ngayMuon = parse_date(df_new.iloc[rNew, 14])
+            ngayGiaHan = parse_date(df_new.iloc[rNew, 20])
 
             if ngayMuon:
+                row[12] = "'" + safe_format(ngayMuon)
 
-                ws_old[f"M{newRow}"] = safe_format(
-                    ngayMuon
-                )
+            row[14] = df_new.iloc[rNew, 15]
 
-            # =============================================
-            # O
-            # =============================================
-            ws_old[f"O{newRow}"] = (
-                ws_new[f"P{rNew}"].value
-            )
-
-            # =============================================
-            # S
-            # =============================================
-            ngayTra = parse_date(
-                ws_new[f"T{rNew}"].value
-            )
+            ngayTra = parse_date(df_new.iloc[rNew, 19])
 
             if ngayTra:
+                row[18] = safe_format(ngayTra)
 
-                ws_old[f"S{newRow}"] = safe_format(
-                    ngayTra
-                )
+            if ngayGiaHan and ngayMuon and ngayGiaHan != ngayMuon:
+                row[20] = "'" + safe_format(ngayGiaHan)
 
-            # =============================================
-            # U
-            # =============================================
-            ngayGiaHan = parse_date(
-                ws_new[f"U{rNew}"].value
-            )
+            valX = str(df_new.iloc[rNew, 23])
 
-            if (
-                ngayGiaHan and
-                ngayMuon and
-                safe_format(ngayGiaHan)
-                !=
-                safe_format(ngayMuon)
-            ):
+            row[24] = "'" + valX.zfill(10) if valX.isdigit() else valX
 
-                ws_old[f"U{newRow}"] = safe_format(
-                    ngayGiaHan
-                )
+            row[19] = count_gia_han(str(row[20]).replace("'", ""))
 
-            # =============================================
-            # X -> Y
-            # =============================================
-            valX = str(
-                ws_new[f"X{rNew}"].value
-            )
+            new_rows.append(row)
 
-            if valX.isdigit():
+        if new_rows:
 
-                ws_old[f"Y{newRow}"] = (
-                    valX.zfill(10)
-                )
+            df_add = pd.DataFrame(new_rows, columns=df_old.columns)
 
-            else:
+            df_old = pd.concat([df_old, df_add], ignore_index=True)
 
-                ws_old[f"Y{newRow}"] = valX
+        # ===== MAP =====
+        if path_map:
 
-            # =============================================
-            # T
-            # =============================================
-            ws_old[f"T{newRow}"] = count_gia_han(
-                ws_old[f"U{newRow}"].value
-            )
-
-        # =================================================
-        # MAP
-        # =================================================
-        if ws_map:
+            df_map = pd.read_excel(path_map, dtype=str).fillna("")
 
             dict_map = {}
 
-            last_map = ws_map.max_row
+            for i in range(len(df_map)):
 
-            for r in range(2, last_map + 1):
-
-                key = clean_key(
-                    ws_map[f"C{r}"].value
-                )
+                key = clean_key(df_map.iloc[i, 2])
 
                 if key:
+                    dict_map[key] = i
 
-                    dict_map[key] = r
+            for i in range(1, len(df_old)):
 
-            last_old = ws_old.max_row
-
-            for r in range(2, last_old + 1):
-
-                key = clean_key(
-                    ws_old[f"B{r}"].value
-                )
+                key = clean_key(df_old.iloc[i, 1])
 
                 if key in dict_map:
 
                     rMap = dict_map[key]
 
-                    ws_old[f"AA{r}"] = (
-                        ws_map[f"D{rMap}"].value
-                    )
+                    df_old.iloc[i, 26] = df_map.iloc[rMap, 3]
+                    df_old.iloc[i, 25] = df_map.iloc[rMap, 4]
 
-                    ws_old[f"Z{r}"] = (
-                        ws_map[f"E{rMap}"].value
-                    )
-
-        # =================================================
-        # STATUS
-        # =================================================
-        last_old = ws_old.max_row
-
-        ws_old["AB1"] = "Tình trạng"
-
+        # ===== QUÁ HẠN =====
         today = datetime.today()
 
-        for r in range(2, last_old + 1):
+        for i in range(len(df_old)):
 
-            d = parse_date(
-                ws_old[f"S{r}"].value
-            )
+            d = parse_date(df_old.iloc[i, 18])
 
-            if d and d < today:
+            df_old.iloc[i, 27] = "Qua han" if d and d < today else "Chua qua han"
 
-                ws_old[f"AB{r}"] = "Qua han"
+        # ===== HEADER =====
+        cols = list(df_old.columns)
 
-            else:
+        if len(cols) > 27:
+            cols[27] = "Tình trạng"
 
-                ws_old[f"AB{r}"] = "Chua qua han"
+        df_old.columns = cols
 
-        # =================================================
-        # HIDE COL
-        # =================================================
-        cols_hide = [
-            "A", "G", "H", "I",
-            "K", "L", "N", "P",
-            "Q", "R", "V", "W", "X"
-        ]
+        # ===== EXPORT =====
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
 
-        for col in cols_hide:
-
-            ws_old.column_dimensions[
-                col
-            ].hidden = True
-
-        # =================================================
-        # SAVE
-        # =================================================
-        tmp = tempfile.NamedTemporaryFile(
-            delete=False,
-            suffix=".xlsx"
-        )
-
-        path = tmp.name
+        output_path = tmp.name
 
         tmp.close()
 
-        wb_old.save(path)
+        df_old.to_excel(output_path, index=False, engine="openpyxl")
 
-        # =================================================
-        # RETURN BASE64
-        # =================================================
-        with open(path, "rb") as f:
+        # ===== HIDE COLUMN =====
+        wb = load_workbook(output_path)
 
-            file_data = base64.b64encode(
-                f.read()
-            ).decode("utf-8")
+        ws = wb.active
+
+        cols_hide = ["A", "G", "H", "I", "K", "L", "N", "P", "Q", "R", "V", "W", "X"]
+
+        for col in cols_hide:
+            ws.column_dimensions[col].hidden = True
+
+        wb.save(output_path)
+
+        # ===== CONVERT RESULT TO BASE64 =====
+        with open(output_path, "rb") as f:
+            result_base64 = base64.b64encode(f.read()).decode("utf-8")
+
+        # ===== DELETE TEMP =====
+        os.remove(path_old)
+        os.remove(path_new)
+
+        if path_map:
+            os.remove(path_map)
+
+        os.remove(output_path)
 
         return jsonify({
             "success": True,
-            "filename": "result.xlsx",
-            "file": file_data
+            "file_name": "result.xlsx",
+            "file_base64": result_base64
         })
 
     except Exception as e:
-
-        traceback.print_exc()
 
         return jsonify({
             "success": False,
@@ -619,13 +363,5 @@ def dongbo():
         }), 500
 
 
-# =========================================================
-# MAIN
-# =========================================================
 if __name__ == "__main__":
-
-    app.run(
-        debug=True,
-        host="0.0.0.0",
-        port=5001
-    )
+    app.run(host="0.0.0.0", port=5001, debug=True)
