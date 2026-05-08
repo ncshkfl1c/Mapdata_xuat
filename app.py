@@ -15,7 +15,7 @@ app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 
 
 # =========================================================
-# BASE64
+# BASE64 TO FILE
 # =========================================================
 def base64_to_file(base64_string):
 
@@ -24,7 +24,6 @@ def base64_to_file(base64_string):
 
     try:
 
-        # remove data:application/...
         if "," in base64_string:
             base64_string = base64_string.split(",")[1]
 
@@ -77,7 +76,6 @@ def parse_date(val):
 
             return d.to_pydatetime()
 
-        # normal date
         d = pd.to_datetime(
             str(val),
             dayfirst=True,
@@ -160,6 +158,18 @@ def ensure_columns(df, total_cols):
 
 
 # =========================================================
+# HOME
+# =========================================================
+@app.route("/", methods=["GET"])
+def home():
+
+    return jsonify({
+        "success": True,
+        "message": "API running"
+    })
+
+
+# =========================================================
 # API
 # =========================================================
 @app.route("/dongbo", methods=["POST"])
@@ -173,43 +183,48 @@ def dongbo():
         data = request.get_json()
 
         if not data:
+
             return jsonify({
                 "success": False,
                 "error": "Missing JSON body"
             }), 400
 
         # =================================================
-        # GET BASE64
+        # GET FILES
         # =================================================
         file_old_b64 = data.get("file_old")
         file_new_b64 = data.get("file_new")
         file_map_b64 = data.get("file_map")
 
         if not file_old_b64:
+
             return jsonify({
                 "success": False,
                 "error": "Missing file_old"
             }), 400
 
         if not file_new_b64:
+
             return jsonify({
                 "success": False,
                 "error": "Missing file_new"
             }), 400
 
         # =================================================
-        # CONVERT TO MEMORY FILE
+        # CONVERT BASE64
         # =================================================
         file_old = base64_to_file(file_old_b64)
         file_new = base64_to_file(file_new_b64)
 
         if not file_old:
+
             return jsonify({
                 "success": False,
                 "error": "Invalid file_old"
             }), 400
 
         if not file_new:
+
             return jsonify({
                 "success": False,
                 "error": "Invalid file_new"
@@ -226,24 +241,26 @@ def dongbo():
         df_old = pd.read_excel(file_old).fillna("")
         df_new = pd.read_excel(file_new).fillna("")
 
-        # reset column index
+        # reset columns numeric
         df_old.columns = range(df_old.shape[1])
         df_new.columns = range(df_new.shape[1])
 
         if df_old.empty:
+
             return jsonify({
                 "success": False,
                 "error": "file_old empty"
             }), 400
 
         if df_new.empty:
+
             return jsonify({
                 "success": False,
                 "error": "file_new empty"
             }), 400
 
         # =================================================
-        # SKIP 9 ROW FILE NEW
+        # SKIP HEADER
         # =================================================
         df_new = df_new.iloc[9:].reset_index(drop=True)
 
@@ -259,7 +276,7 @@ def dongbo():
 
             return jsonify({
                 "success": False,
-                "error": "file_new missing ID column"
+                "error": "Missing ID column"
             }), 400
 
         # =================================================
@@ -317,25 +334,33 @@ def dongbo():
             )
 
             if ngayMuon:
+
                 df_old.iloc[i, 12] = (
                     "'" + safe_format(ngayMuon)
                 )
+
             else:
+
                 df_old.iloc[i, 12] = str(
                     new_row.iloc[14]
                 )
 
-            df_old.iloc[i, 14] = new_row.iloc[15]
+            df_old.iloc[i, 14] = (
+                new_row.iloc[15]
+            )
 
             ngayTra = parse_date(
                 new_row.iloc[19]
             )
 
             if ngayTra:
-                df_old.iloc[i, 18] = safe_format(
-                    ngayTra
+
+                df_old.iloc[i, 18] = (
+                    safe_format(ngayTra)
                 )
+
             else:
+
                 df_old.iloc[i, 18] = ""
 
             # =============================================
@@ -372,14 +397,17 @@ def dongbo():
             lichSuCu = "; ".join(arr)
 
             if lichSuCu:
+
                 df_old.iloc[i, 20] = (
                     "'" + lichSuCu
                 )
+
             else:
+
                 df_old.iloc[i, 20] = ""
 
-            df_old.iloc[i, 19] = count_gia_han(
-                lichSuCu
+            df_old.iloc[i, 19] = (
+                count_gia_han(lichSuCu)
             )
 
             dict_new_only.pop(
@@ -390,7 +418,7 @@ def dongbo():
             rows_keep.append(i)
 
         # =================================================
-        # KEEP MATCHED ROWS
+        # KEEP MATCHED
         # =================================================
         if rows_keep:
 
@@ -399,7 +427,7 @@ def dongbo():
             ].reset_index(drop=True)
 
         # =================================================
-        # ADD NEW ROWS
+        # ADD NEW
         # =================================================
         new_rows = []
 
@@ -409,6 +437,9 @@ def dongbo():
 
             new_row = df_new.iloc[rNew]
 
+            # =============================================
+            # BASIC
+            # =============================================
             row[1] = new_row.iloc[3]
             row[2] = new_row.iloc[4]
             row[3] = new_row.iloc[5]
@@ -422,25 +453,29 @@ def dongbo():
                 new_row.iloc[14]
             )
 
-            if ngayMuon:
-                row[12] = (
-                    "'" + safe_format(ngayMuon)
-                )
-
-            row[14] = new_row.iloc[15]
+            ngayGiaHan = parse_date(
+                new_row.iloc[20]
+            )
 
             ngayTra = parse_date(
                 new_row.iloc[19]
             )
 
-            if ngayTra:
-                row[18] = safe_format(
-                    ngayTra
+            if ngayMuon:
+
+                row[12] = (
+                    "'" + safe_format(
+                        ngayMuon
+                    )
                 )
 
-            ngayGiaHan = parse_date(
-                new_row.iloc[20]
-            )
+            row[14] = new_row.iloc[15]
+
+            if ngayTra:
+
+                row[18] = (
+                    safe_format(ngayTra)
+                )
 
             if (
                 ngayGiaHan and
@@ -463,10 +498,13 @@ def dongbo():
             )
 
             if valX.isdigit():
+
                 row[24] = (
                     "'" + valX.zfill(10)
                 )
+
             else:
+
                 row[24] = valX
 
             row[19] = count_gia_han(
@@ -568,7 +606,7 @@ def dongbo():
         df_old.columns = cols
 
         # =================================================
-        # EXPORT
+        # EXPORT EXCEL
         # =================================================
         output = BytesIO()
 
@@ -585,7 +623,7 @@ def dongbo():
             ws = writer.book.active
 
             # =============================================
-            # HIDE COLUMN
+            # HIDE COLUMNS
             # =============================================
             cols_hide = [
                 "A", "G", "H", "I",
@@ -594,6 +632,7 @@ def dongbo():
             ]
 
             for col in cols_hide:
+
                 ws.column_dimensions[
                     col
                 ].hidden = True
@@ -634,7 +673,7 @@ def dongbo():
         output.seek(0)
 
         # =================================================
-        # RETURN EXCEL
+        # RETURN FILE
         # =================================================
         return send_file(
             output,
@@ -651,18 +690,6 @@ def dongbo():
             "success": False,
             "error": str(e)
         }), 500
-
-
-# =========================================================
-# HEALTH CHECK
-# =========================================================
-@app.route("/", methods=["GET"])
-def home():
-
-    return jsonify({
-        "success": True,
-        "message": "API running"
-    })
 
 
 # =========================================================
