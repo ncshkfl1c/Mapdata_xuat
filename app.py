@@ -1,249 +1,588 @@
-from flask import Flask, request, send_file, jsonify
+from flask import Flask, request, jsonify, send_file
 import pandas as pd
 from datetime import datetime
-import tempfile
-import os
+from io import BytesIO
 import base64
-import io
 from openpyxl import load_workbook
+import traceback
 
 app = Flask(__name__)
 
-# ====================== CÁC HÀM HỖ TRỢ ======================
+# ===== MAX SIZE =====
+app.config['MAX_CONTENT_LENGTH'] = 30 * 1024 * 1024
 
+
+# =========================================================
+# BASE64
+# =========================================================
+def base64_to_file(base64_string):
+
+    if not base64_string:
+        return None
+
+    # remove data:...base64,
+    if "," in base64_string:
+        base64_string = base64_string.split(",")[1]
+
+    file_bytes = base64.b64decode(base64_string)
+
+    return BytesIO(file_bytes)
+
+
+# =========================================================
+# CLEAN KEY
+# =========================================================
 def clean_key(val):
-    if val is None:
+
+    if pd.isna(val):
         return ""
+
     s = str(val).strip()
+
     if s.endswith(".0"):
         s = s[:-2]
-    try:
-        if "E" in s or "e" in s:
-            s = str(int(float(s)))
-    except:
-        pass
+
     return s
 
 
+# =========================================================
+# DATE
+# =========================================================
 def parse_date(val):
-    if val is None or str(val).strip() == "":
+
+    if val in [None, "", "nan"]:
         return None
-    s = str(val).strip()
 
-    # Thử định dạng Việt Nam
-    for fmt in ["%d/%m/%Y", "%d-%m-%Y", "%Y-%m-%d"]:
-        try:
-            return datetime.strptime(s, fmt)
-        except:
-            continue
-
-    # Excel serial date
     try:
-        d = pd.to_datetime(val, origin='1899-12-30', unit='D', errors='coerce')
-        if not pd.isna(d):
-            return d.to_pydatetime()
-    except:
-        pass
 
-    # Fallback
-    try:
-        d = pd.to_datetime(val, errors='coerce')
-        if not pd.isna(d):
+        # excel serial
+        if isinstance(val, (int, float)):
+
+            d = pd.to_datetime(
+                val,
+                origin="1899-12-30",
+                unit="D",
+                errors="coerce"
+            )
+
+            if pd.isna(d):
+                return None
+
             return d.to_pydatetime()
+
+        d = pd.to_datetime(
+            str(val),
+            dayfirst=True,
+            errors="coerce"
+        )
+
+        if pd.isna(d):
+            return None
+
+        return d.to_pydatetime()
+
     except:
-        pass
-    return None
+        return None
 
 
 def safe_format(d):
-    return d.strftime("%d/%m/%Y") if d else ""
+
+    if not d:
+        return ""
+
+    return d.strftime("%d/%m/%Y")
 
 
+# =========================================================
+# HISTORY
+# =========================================================
 def fix_serial_date(text):
+
     if not text:
         return ""
+
     parts = str(text).split(";")
+
     result = []
+
     for p in parts:
-        d = parse_date(p.strip())
-        val = safe_format(d) if d else p.strip()
-        if val and val not in result:
+
+        val = p.strip()
+
+        if not val:
+            continue
+
+        d = parse_date(val)
+
+        if d:
+            val = safe_format(d)
+
+        if val not in result:
             result.append(val)
+
     return "; ".join(result)
 
 
 def count_gia_han(text):
+
     if not text:
         return "0"
-    return str(len([x for x in text.split(";") if x.strip()]))
+
+    return str(
+        len(
+            [
+                x for x in text.split(";")
+                if x.strip()
+            ]
+        )
+    )
 
 
+# =========================================================
+# ENSURE COL
+# =========================================================
 def ensure_columns(df, total_cols):
+
     if df.shape[1] < total_cols:
+
         for i in range(df.shape[1], total_cols):
             df[i] = ""
+
     return df
 
 
-# ====================== API NHẬN BASE64 ======================
+# =========================================================
+# API
+# =========================================================
 @app.route("/dongbo", methods=["POST"])
 def dongbo():
-    try:
-        data = request.get_json()
-        if not data:
-            return jsonify({"error": "Không nhận được dữ liệu JSON"}), 400
 
+    try:
+
+        data = request.get_json()
+
+        if not data:
+            return jsonify({
+                "success": False,
+                "error": "Missing JSON body"
+            }), 400
+
+        # =================================================
+        # GET BASE64
+        # =================================================
         file_old_b64 = data.get("file_old")
         file_new_b64 = data.get("file_new")
-        file_map_b64 = data.get("file_map")  # optional
+        file_map_b64 = data.get("file_map")
 
-        if not file_old_b64 or not file_new_b64:
-            return jsonify({"error": "Thiếu file_old hoặc file_new (Base64)"}), 400
+        if not file_old_b64:
+            return jsonify({
+                "success": False,
+                "error": "Missing file_old"
+            }), 400
 
-        # Hàm chuyển Base64 sang DataFrame
-        def b64_to_df(b64_string, skiprows=0):
-            file_bytes = base64.b64decode(b64_string)
-            df = pd.read_excel(io.BytesIO(file_bytes), dtype=str, skiprows=skiprows).fillna("")
-            return df
+        if not file_new_b64:
+            return jsonify({
+                "success": False,
+                "error": "Missing file_new"
+            }), 400
 
-        df_old = b64_to_df(file_old_b64)
-        df_new = b64_to_df(file_new_b64, skiprows=9)   # Skip 9 dòng đầu file new
+        # =================================================
+        # CONVERT
+        # =================================================
+        file_old = base64_to_file(file_old_b64)
+        file_new = base64_to_file(file_new_b64)
 
+        file_map = None
+
+        if file_map_b64:
+            file_map = base64_to_file(file_map_b64)
+
+        # =================================================
+        # READ EXCEL
+        # =================================================
+        df_old = pd.read_excel(file_old).fillna("")
+        df_new = pd.read_excel(file_new).fillna("")
+
+        if df_old.empty:
+            return jsonify({
+                "success": False,
+                "error": "file_old empty"
+            }), 400
+
+        if df_new.empty:
+            return jsonify({
+                "success": False,
+                "error": "file_new empty"
+            }), 400
+
+        # =================================================
+        # SKIP 9 ROW
+        # =================================================
+        df_new = df_new.iloc[9:].reset_index(drop=True)
+
+        # =================================================
+        # ENSURE COL
+        # =================================================
         df_old = ensure_columns(df_old, 28)
 
         COL_OLD_ID = 9
         COL_NEW_ID = 11
 
+        if df_new.shape[1] <= COL_NEW_ID:
+
+            return jsonify({
+                "success": False,
+                "error": "file_new missing ID column"
+            }), 400
+
+        # =================================================
+        # LOAD NEW
+        # =================================================
         dict_all = {}
         dict_new_only = {}
 
         for i in range(len(df_new)):
-            key = clean_key(df_new.iloc[i, COL_NEW_ID])
-            if key:
+
+            key = clean_key(
+                df_new.iloc[i, COL_NEW_ID]
+            )
+
+            if key and key not in dict_all:
+
                 dict_all[key] = i
                 dict_new_only[key] = i
 
-        rows_keep = [0]
+        # =================================================
+        # UPDATE
+        # =================================================
+        rows_keep = []
 
-        # === UPDATE EXISTING ===
-        for i in reversed(range(1, len(df_old))):
-            colID = clean_key(df_old.iloc[i, COL_OLD_ID])
-            if colID in dict_all:
-                rNew = dict_all[colID]
+        for i in reversed(range(len(df_old))):
 
-                df_old.iloc[i, 1] = df_new.iloc[rNew, 3]
-                df_old.iloc[i, 2] = df_new.iloc[rNew, 4]
-                df_old.iloc[i, 3] = df_new.iloc[rNew, 5]
-                df_old.iloc[i, 4] = df_new.iloc[rNew, 6]
+            colID = clean_key(
+                df_old.iloc[i, COL_OLD_ID]
+            )
 
-                ngayMuon = parse_date(df_new.iloc[rNew, 14])
-                ngayGiaHan = parse_date(df_new.iloc[rNew, 20])
+            if colID not in dict_all:
+                continue
 
-                df_old.iloc[i, 12] = "'" + safe_format(ngayMuon) if ngayMuon else df_new.iloc[rNew, 14]
-                df_old.iloc[i, 14] = df_new.iloc[rNew, 15]
-                df_old.iloc[i, 18] = safe_format(parse_date(df_new.iloc[rNew, 19]))
+            rNew = dict_all[colID]
 
-                lichSuCu = str(df_old.iloc[i, 20]).replace("'", "")
-                lichSuCu = fix_serial_date(lichSuCu)
+            new_row = df_new.iloc[rNew]
 
-                arr = [x.strip() for x in lichSuCu.split(";") if x.strip()]
+            # =========================
+            # BASIC
+            # =========================
+            df_old.iloc[i, 1] = new_row[3]
+            df_old.iloc[i, 2] = new_row[4]
+            df_old.iloc[i, 3] = new_row[5]
+            df_old.iloc[i, 4] = new_row[6]
 
-                if ngayGiaHan and ngayMuon and ngayGiaHan != ngayMuon:
-                    val = safe_format(ngayGiaHan)
-                    if val not in arr:
-                        arr.append(val)
+            # =========================
+            # DATE
+            # =========================
+            ngayMuon = parse_date(new_row[14])
+            ngayGiaHan = parse_date(new_row[20])
 
-                lichSuCu = "; ".join(arr)
-                df_old.iloc[i, 20] = "'" + lichSuCu if lichSuCu else ""
-                df_old.iloc[i, 19] = count_gia_han(lichSuCu)
+            if ngayMuon:
+                df_old.iloc[i, 12] = (
+                    "'" + safe_format(ngayMuon)
+                )
+            else:
+                df_old.iloc[i, 12] = str(new_row[14])
 
-                dict_new_only.pop(colID, None)
-                rows_keep.append(i)
+            df_old.iloc[i, 14] = new_row[15]
 
-        df_old = df_old.iloc[rows_keep].reset_index(drop=True)
+            ngayTra = parse_date(new_row[19])
 
-        # === ADD NEW RECORDS ===
+            if ngayTra:
+                df_old.iloc[i, 18] = safe_format(ngayTra)
+            else:
+                df_old.iloc[i, 18] = ""
+
+            # =========================
+            # HISTORY
+            # =========================
+            lichSuCu = str(
+                df_old.iloc[i, 20]
+            ).replace("'", "")
+
+            lichSuCu = fix_serial_date(lichSuCu)
+
+            arr = [
+                x.strip()
+                for x in lichSuCu.split(";")
+                if x.strip()
+            ]
+
+            if (
+                ngayGiaHan and
+                ngayMuon and
+                safe_format(ngayGiaHan) != safe_format(ngayMuon)
+            ):
+
+                val = safe_format(ngayGiaHan)
+
+                if val not in arr:
+                    arr.append(val)
+
+            lichSuCu = "; ".join(arr)
+
+            if lichSuCu:
+                df_old.iloc[i, 20] = "'" + lichSuCu
+            else:
+                df_old.iloc[i, 20] = ""
+
+            df_old.iloc[i, 19] = count_gia_han(
+                lichSuCu
+            )
+
+            dict_new_only.pop(colID, None)
+
+            rows_keep.append(i)
+
+        # =================================================
+        # KEEP ROW
+        # =================================================
+        if rows_keep:
+
+            df_old = df_old.iloc[
+                sorted(rows_keep)
+            ].reset_index(drop=True)
+
+        # =================================================
+        # ADD NEW
+        # =================================================
         new_rows = []
-        for colID, rNew in dict_new_only.items():
-            row = [""] * 28
-            row[1] = df_new.iloc[rNew, 3]
-            row[2] = df_new.iloc[rNew, 4]
-            row[3] = df_new.iloc[rNew, 5]
-            row[4] = df_new.iloc[rNew, 6]
-            row[9] = df_new.iloc[rNew, 11]
 
-            ngayMuon = parse_date(df_new.iloc[rNew, 14])
-            ngayGiaHan = parse_date(df_new.iloc[rNew, 20])
+        for colID, rNew in dict_new_only.items():
+
+            row = [""] * 28
+
+            new_row = df_new.iloc[rNew]
+
+            row[1] = new_row[3]
+            row[2] = new_row[4]
+            row[3] = new_row[5]
+            row[4] = new_row[6]
+            row[9] = new_row[11]
+
+            # =========================
+            # DATE
+            # =========================
+            ngayMuon = parse_date(new_row[14])
 
             if ngayMuon:
                 row[12] = "'" + safe_format(ngayMuon)
-            row[14] = df_new.iloc[rNew, 15]
 
-            ngayTra = parse_date(df_new.iloc[rNew, 19])
+            row[14] = new_row[15]
+
+            ngayTra = parse_date(new_row[19])
+
             if ngayTra:
                 row[18] = safe_format(ngayTra)
 
-            if ngayGiaHan and ngayMuon and ngayGiaHan != ngayMuon:
-                row[20] = "'" + safe_format(ngayGiaHan)
+            ngayGiaHan = parse_date(new_row[20])
 
-            valX = str(df_new.iloc[rNew, 23])
-            row[24] = "'" + valX.zfill(10) if valX.isdigit() else valX
-            row[19] = count_gia_han(str(row[20]).replace("'", ""))
+            if (
+                ngayGiaHan and
+                ngayMuon and
+                safe_format(ngayGiaHan) != safe_format(ngayMuon)
+            ):
+
+                row[20] = "'" + safe_format(
+                    ngayGiaHan
+                )
+
+            # =========================
+            # STT
+            # =========================
+            valX = str(new_row[23])
+
+            if valX.isdigit():
+                row[24] = "'" + valX.zfill(10)
+            else:
+                row[24] = valX
+
+            row[19] = count_gia_han(
+                str(row[20]).replace("'", "")
+            )
 
             new_rows.append(row)
 
+        # =================================================
+        # CONCAT
+        # =================================================
         if new_rows:
-            df_add = pd.DataFrame(new_rows, columns=df_old.columns)
-            df_old = pd.concat([df_old, df_add], ignore_index=True)
 
-        # === MAP FILE (nếu có) ===
-        if file_map_b64:
-            df_map = b64_to_df(file_map_b64)
+            df_add = pd.DataFrame(
+                new_rows,
+                columns=df_old.columns
+            )
+
+            df_old = pd.concat(
+                [df_old, df_add],
+                ignore_index=True
+            )
+
+        # =================================================
+        # MAP
+        # =================================================
+        if file_map:
+
+            df_map = pd.read_excel(
+                file_map
+            ).fillna("")
+
             dict_map = {}
+
             for i in range(len(df_map)):
-                key = clean_key(df_map.iloc[i, 2])
-                if key:
+
+                key = clean_key(
+                    df_map.iloc[i, 2]
+                )
+
+                if key and key not in dict_map:
                     dict_map[key] = i
 
-            for i in range(1, len(df_old)):
-                key = clean_key(df_old.iloc[i, 1])
-                if key in dict_map:
-                    rMap = dict_map[key]
-                    df_old.iloc[i, 26] = df_map.iloc[rMap, 3]
-                    df_old.iloc[i, 25] = df_map.iloc[rMap, 4]
+            for i in range(len(df_old)):
 
-        # === TÌNH TRẠNG QUÁ HẠN ===
-        today = datetime.today()
+                key = clean_key(
+                    df_old.iloc[i, 1]
+                )
+
+                if key not in dict_map:
+                    continue
+
+                rMap = dict_map[key]
+
+                df_old.iloc[i, 26] = df_map.iloc[rMap, 3]
+                df_old.iloc[i, 25] = df_map.iloc[rMap, 4]
+
+        # =================================================
+        # QUA HAN
+        # =================================================
+        today = datetime.today().date()
+
         for i in range(len(df_old)):
-            d = parse_date(df_old.iloc[i, 18])
-            df_old.iloc[i, 27] = "Qua han" if d and d < today else "Chua qua han"
 
-        # Đặt tên cột
+            d = parse_date(
+                df_old.iloc[i, 18]
+            )
+
+            if d:
+                d = d.date()
+
+            df_old.iloc[i, 27] = (
+                "Qua han"
+                if d and d < today
+                else "Chua qua han"
+            )
+
+        # =================================================
+        # HEADER
+        # =================================================
         cols = list(df_old.columns)
+
         if len(cols) > 27:
-            cols[27] = "Tình trạng"
+            cols[27] = "Tinh trang"
+
         df_old.columns = cols
 
-        # ====================== EXPORT ======================
-        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
-        path = tmp.name
-        tmp.close()
+        # =================================================
+        # EXPORT
+        # =================================================
+        output = BytesIO()
 
-        df_old.to_excel(path, index=False, engine="openpyxl")
+        with pd.ExcelWriter(
+            output,
+            engine="openpyxl"
+        ) as writer:
 
-        # Hide columns
-        wb = load_workbook(path)
-        ws = wb.active
-        cols_hide = ["A", "G", "H", "I", "K", "L", "N", "P", "Q", "R", "V", "W", "X"]
-        for col in cols_hide:
-            ws.column_dimensions[col].hidden = True
-        wb.save(path)
+            df_old.to_excel(
+                writer,
+                index=False
+            )
 
-        return send_file(path, as_attachment=True, download_name="KetQua_DongBo.xlsx")
+            ws = writer.book.active
+
+            # =============================================
+            # HIDE COLUMN
+            # =============================================
+            cols_hide = [
+                "A", "G", "H", "I",
+                "K", "L", "N", "P",
+                "Q", "R", "V", "W", "X"
+            ]
+
+            for col in cols_hide:
+                ws.column_dimensions[col].hidden = True
+
+            # =============================================
+            # AUTO WIDTH
+            # =============================================
+            for col in ws.columns:
+
+                max_len = 0
+
+                col_letter = col[0].column_letter
+
+                for cell in col:
+
+                    try:
+
+                        val = str(cell.value)
+
+                        if len(val) > max_len:
+                            max_len = len(val)
+
+                    except:
+                        pass
+
+                ws.column_dimensions[
+                    col_letter
+                ].width = min(max_len + 2, 40)
+
+        output.seek(0)
+
+        # =================================================
+        # RETURN BINARY FILE
+        # =================================================
+        return send_file(
+            output,
+            as_attachment=True,
+            download_name="result.xlsx",
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+
+        traceback.print_exc()
+
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
+# =========================================================
+# HEALTH CHECK
+# =========================================================
+@app.route("/", methods=["GET"])
+def home():
+
+    return jsonify({
+        "success": True,
+        "message": "API running"
+    })
+
+
+# =========================================================
+# MAIN
+# =========================================================
 if __name__ == "__main__":
-    app.run(debug=True, port=5001)
+
+    app.run(
+        host="0.0.0.0",
+        port=5001
+    )
