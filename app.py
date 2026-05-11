@@ -94,7 +94,7 @@ def ensure_columns(df, total_cols):
     return df
 
 
-# ===== DECODE EXCEL BASE64 (không đổi format) =====
+# ===== DECODE EXCEL BASE64 (GIỮ NGUYÊN HEADER VÀ DỮ LIỆU) =====
 def decode_excel(b64):
     raw = base64.b64decode(b64)
     wb = load_workbook(BytesIO(raw), data_only=True)
@@ -106,6 +106,7 @@ def decode_excel(b64):
 
     header = rows[0]
     data = rows[1:]
+
     return pd.DataFrame(data, columns=header)
 
 
@@ -121,11 +122,12 @@ def dongbo():
         if not file_old_b64 or not file_new_b64:
             return jsonify({"error": "Thiếu file_old hoặc file_new"}), 400
 
+        # ===== LOAD FILE =====
         df_old = decode_excel(file_old_b64)
         df_new = decode_excel(file_new_b64)
         df_map = decode_excel(file_map_b64) if file_map_b64 else None
 
-        # SKIP 9 ROWS
+        # ===== SKIP 9 ROWS FILE NEW =====
         df_new = df_new.iloc[9:].reset_index(drop=True)
 
         df_old = ensure_columns(df_old, 28)
@@ -136,7 +138,7 @@ def dongbo():
         dict_all = {}
         dict_new_only = {}
 
-        # ==== LOAD NEW ====
+        # ===== LOAD NEW IDs =====
         for i in range(len(df_new)):
             key = clean_key(df_new.iloc[i, COL_NEW_ID])
             if key:
@@ -145,7 +147,7 @@ def dongbo():
 
         rows_keep = [0]
 
-        # ==== UPDATE OLD ====
+        # ===== UPDATE OLD =====
         for i in reversed(range(1, len(df_old))):
 
             colID = clean_key(df_old.iloc[i, COL_OLD_ID])
@@ -185,7 +187,7 @@ def dongbo():
 
         df_old = df_old.iloc[rows_keep].reset_index(drop=True)
 
-        # ==== ADD NEW ROWS ====
+        # ===== ADD NEW ROWS =====
         new_rows = []
 
         for colID, rNew in dict_new_only.items():
@@ -225,7 +227,7 @@ def dongbo():
             df_add = pd.DataFrame(new_rows, columns=df_old.columns)
             df_old = pd.concat([df_old, df_add], ignore_index=True)
 
-        # ==== MAP FILE MAP ====
+        # ===== MAP FILE_MAP =====
         if df_map is not None:
             dict_map = {}
             for i in range(len(df_map)):
@@ -240,24 +242,38 @@ def dongbo():
                     df_old.iloc[i, 26] = df_map.iloc[rMap, 3]
                     df_old.iloc[i, 25] = df_map.iloc[rMap, 4]
 
-        # ==== QUÁ HẠN ====
+        # ===== QUÁ HẠN =====
         today = datetime.today()
         for i in range(len(df_old)):
             d = parse_date(df_old.iloc[i, 18])
             df_old.iloc[i, 27] = "Qua han" if d and d < today else "Chua qua han"
 
+        # ===== SET HEADER =====
         cols = list(df_old.columns)
         if len(cols) > 27:
             cols[27] = "Tình trạng"
         df_old.columns = cols
 
-        # ==== EXPORT ====
+        # ===== EXPORT FILE =====
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         path = tmp.name
         tmp.close()
 
         df_old.to_excel(path, index=False, engine="openpyxl")
 
+        # ===== HIDE COLUMNS =====
+        wb = load_workbook(path)
+        ws = wb.active
+
+        cols_hide = ["A", "G", "H", "I", "K", "L", "N", "P", "Q", "R", "V", "W", "X"]
+
+        for col in cols_hide:
+            if col in ws.column_dimensions:
+                ws.column_dimensions[col].hidden = True
+
+        wb.save(path)
+
+        # ===== RETURN BASE64 =====
         with open(path, "rb") as f:
             encoded = base64.b64encode(f.read()).decode()
 
