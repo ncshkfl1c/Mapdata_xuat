@@ -8,7 +8,8 @@ from openpyxl import load_workbook
 
 app = Flask(__name__)
 
-# ===== CLEAN KEY 1=====
+
+# ===== CLEAN KEY =====
 def clean_key(val):
     if val is None:
         return ""
@@ -25,6 +26,7 @@ def clean_key(val):
 
     return s
 
+
 # ===== DATE =====
 def parse_date(val):
     if val is None:
@@ -34,29 +36,34 @@ def parse_date(val):
     if s == "":
         return None
 
+    # dd/mm/yyyy
     try:
         return datetime.strptime(s, "%d/%m/%Y")
     except:
         pass
 
+    # serial Excel
     try:
         d = pd.to_datetime(val, origin='1899-12-30', unit='D', errors='coerce')
-        if pd.isna(d):
-            return None
-        return d.to_pydatetime()
+        if not pd.isna(d):
+            return d.to_pydatetime()
     except:
         pass
 
+    # auto parsing
     try:
         d = pd.to_datetime(val, errors="coerce")
-        if pd.isna(d):
-            return None
-        return d.to_pydatetime()
+        if not pd.isna(d):
+            return d.to_pydatetime()
     except:
-        return None
+        pass
+
+    return None
+
 
 def safe_format(d):
     return d.strftime("%d/%m/%Y") if d else ""
+
 
 # ===== HISTORY =====
 def fix_serial_date(text):
@@ -75,10 +82,12 @@ def fix_serial_date(text):
 
     return "; ".join(result)
 
+
 def count_gia_han(text):
     if not text:
         return ""
     return str(len([x for x in text.split(";") if x.strip()]))
+
 
 # ===== ENSURE COL =====
 def ensure_columns(df, total_cols):
@@ -87,9 +96,20 @@ def ensure_columns(df, total_cols):
             df[i] = ""
     return df
 
-# ====== DECODE BASE64 EXCEL ======
+
+# ===== DECODE FILE EXCEL KHÔNG MẤT DỮ LIỆU =====
 def decode_excel(b64data):
-    return pd.read_excel(BytesIO(base64.b64decode(b64data)), dtype=str).fillna("")
+    raw = base64.b64decode(b64data)
+    buffer = BytesIO(raw)
+
+    wb = load_workbook(buffer, data_only=True)
+    ws = wb.active
+
+    rows = []
+    for row in ws.iter_rows(values_only=True):
+        rows.append([str(c) if c is not None else "" for c in row])
+
+    return pd.DataFrame(rows)
 
 
 # ====== API /dongbo ======
@@ -107,12 +127,12 @@ def dongbo():
         if not file_old_b64 or not file_new_b64:
             return jsonify({"error": "Thiếu file_old hoặc file_new"}), 400
 
-        # Giải mã file
+        # Đọc file từ base64
         df_old = decode_excel(file_old_b64)
         df_new = decode_excel(file_new_b64)
         df_map = decode_excel(file_map_b64) if file_map_b64 else None
 
-        # SKIP 9 DÒNG ĐẦU FILE NEW
+        # Bỏ 9 dòng đầu file NEW
         df_new = df_new.iloc[9:].reset_index(drop=True)
 
         df_old = ensure_columns(df_old, 28)
@@ -149,21 +169,21 @@ def dongbo():
                 ngayMuon = parse_date(df_new.iloc[rNew, 14])
                 ngayGiaHan = parse_date(df_new.iloc[rNew, 20])
 
-                df_old.iloc[i, 12] = "'" + safe_format(ngayMuon) if ngayMuon else df_new.iloc[rNew, 14]
+                df_old.iloc[i, 12] = safe_format(ngayMuon) if ngayMuon else df_new.iloc[rNew, 14]
                 df_old.iloc[i, 14] = df_new.iloc[rNew, 15]
                 df_old.iloc[i, 18] = safe_format(parse_date(df_new.iloc[rNew, 19]))
 
-                lichSuCu = str(df_old.iloc[i, 20]).replace("'", "")
-                lichSuCu = fix_serial_date(lichSuCu)
+                lichSuCu = fix_serial_date(str(df_old.iloc[i, 20]))
+
                 arr = [x.strip() for x in lichSuCu.split(";") if x.strip()]
 
                 if ngayGiaHan and ngayMuon and ngayGiaHan != ngayMuon:
-                    val = safe_format(ngayGiaHan)
-                    if val not in arr:
-                        arr.append(val)
+                    new_val = safe_format(ngayGiaHan)
+                    if new_val not in arr:
+                        arr.append(new_val)
 
                 lichSuCu = "; ".join(arr)
-                df_old.iloc[i, 20] = "'" + lichSuCu if lichSuCu else ""
+                df_old.iloc[i, 20] = lichSuCu
                 df_old.iloc[i, 19] = count_gia_han(lichSuCu)
 
                 dict_new_only.pop(colID, None)
@@ -173,6 +193,7 @@ def dongbo():
 
         # ===== ADD NEW =====
         new_rows = []
+
         for colID, rNew in dict_new_only.items():
 
             row = [""] * 28
@@ -187,7 +208,7 @@ def dongbo():
             ngayGiaHan = parse_date(df_new.iloc[rNew, 20])
 
             if ngayMuon:
-                row[12] = "'" + safe_format(ngayMuon)
+                row[12] = safe_format(ngayMuon)
 
             row[14] = df_new.iloc[rNew, 15]
 
@@ -196,12 +217,12 @@ def dongbo():
                 row[18] = safe_format(ngayTra)
 
             if ngayGiaHan and ngayMuon and ngayGiaHan != ngayMuon:
-                row[20] = "'" + safe_format(ngayGiaHan)
+                row[20] = safe_format(ngayGiaHan)
 
             valX = str(df_new.iloc[rNew, 23])
-            row[24] = "'" + valX.zfill(10) if valX.isdigit() else valX
+            row[24] = valX.zfill(10) if valX.isdigit() else valX
 
-            row[19] = count_gia_han(str(row[20]).replace("'", ""))
+            row[19] = count_gia_han(row[20])
 
             new_rows.append(row)
 
@@ -235,21 +256,14 @@ def dongbo():
             cols[27] = "Tình trạng"
         df_old.columns = cols
 
-        # ===== EXPORT FILE =====
+        # ===== EXPORT =====
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         path = tmp.name
         tmp.close()
 
         df_old.to_excel(path, index=False, engine="openpyxl")
 
-        wb = load_workbook(path)
-        ws = wb.active
-        cols_hide = ["A", "G", "H", "I", "K", "L", "N", "P", "Q", "R", "V", "W", "X"]
-        for col in cols_hide:
-            ws.column_dimensions[col].hidden = True
-        wb.save(path)
-
-        # Trả file base64
+        # TRẢ KẾT QUẢ BASE64
         with open(path, "rb") as f:
             encoded = base64.b64encode(f.read()).decode()
 
@@ -259,5 +273,5 @@ def dongbo():
         return jsonify({"error": str(e)}), 500
 
 
-# Cho phép Render chạy bằng Gunicorn
+# Render cần biến `application`
 application = app
