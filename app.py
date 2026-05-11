@@ -3,6 +3,7 @@ import pandas as pd
 from datetime import datetime
 import tempfile
 from openpyxl import load_workbook
+from io import BytesIO
 import base64
 import os
 
@@ -119,28 +120,6 @@ def ensure_columns(df, total_cols):
     return df
 
 
-# =========================================================
-# BASE64 -> TEMP FILE
-# =========================================================
-def save_base64_file(base64_string):
-
-    # remove prefix Power Apps
-    if "," in base64_string:
-        base64_string = base64_string.split(",")[1]
-
-    file_data = base64.b64decode(base64_string)
-
-    tmp = tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=".xlsx"
-    )
-
-    tmp.write(file_data)
-    tmp.close()
-
-    return tmp.name
-
-
 @app.route("/dongbo", methods=["POST"])
 def dongbo():
 
@@ -158,25 +137,41 @@ def dongbo():
         file_map_b64 = data.get("file_map")
 
         # =================================================
-        # SAVE TEMP FILE
+        # REMOVE PREFIX
         # =================================================
-        path_old = save_base64_file(file_old_b64)
-        path_new = save_base64_file(file_new_b64)
+        if "," in file_old_b64:
+            file_old_b64 = file_old_b64.split(",")[1]
 
-        temp_files.extend([path_old, path_new])
+        if "," in file_new_b64:
+            file_new_b64 = file_new_b64.split(",")[1]
 
-        path_map = None
+        # =================================================
+        # BASE64 -> BYTESIO
+        # =================================================
+        file_old = BytesIO(
+            base64.b64decode(file_old_b64)
+        )
+
+        file_new = BytesIO(
+            base64.b64decode(file_new_b64)
+        )
+
+        file_map = None
 
         if file_map_b64:
-            path_map = save_base64_file(file_map_b64)
-            temp_files.append(path_map)
+
+            if "," in file_map_b64:
+                file_map_b64 = file_map_b64.split(",")[1]
+
+            file_map = BytesIO(
+                base64.b64decode(file_map_b64)
+            )
 
         # =================================================
-        # CHỈ THAY ĐOẠN NÀY
         # GIỮ NGUYÊN LOGIC GỐC
         # =================================================
-        df_old = pd.read_excel(path_old, dtype=str).fillna("")
-        df_new = pd.read_excel(path_new, dtype=str).fillna("")
+        df_old = pd.read_excel(file_old, dtype=str).fillna("")
+        df_new = pd.read_excel(file_new, dtype=str).fillna("")
 
         # 🔥 SKIP 9 DÒNG ĐẦU FILE NEW
         df_new = df_new.iloc[9:].reset_index(drop=True)
@@ -326,10 +321,10 @@ def dongbo():
             )
 
         # ===== MAP =====
-        if path_map:
+        if file_map:
 
             df_map = pd.read_excel(
-                path_map,
+                file_map,
                 dtype=str
             ).fillna("")
 
@@ -442,7 +437,10 @@ def dongbo():
 
 if __name__ == "__main__":
 
+    port = int(os.environ.get("PORT", 5001))
+
     app.run(
-        debug=True,
-        port=5001
+        host="0.0.0.0",
+        port=port,
+        debug=True
     )
