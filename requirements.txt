@@ -1,6 +1,6 @@
-Flask==3.0.0
-gunicorn==21.2.0
-pandas==1.5.3
-openpyxl==3.1.2
-numpy==1.23.5
-python-dateutil==2.9.0.post0
+Flask
+gunicorn
+pandas
+openpyxl
+numpy
+python-dateutil
