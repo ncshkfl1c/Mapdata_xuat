@@ -36,13 +36,11 @@ def parse_date(val):
     if s == "":
         return None
 
-    # dd/mm/yyyy
     try:
         return datetime.strptime(s, "%d/%m/%Y")
     except:
         pass
 
-    # serial Excel
     try:
         d = pd.to_datetime(val, origin='1899-12-30', unit='D', errors='coerce')
         if not pd.isna(d):
@@ -50,7 +48,6 @@ def parse_date(val):
     except:
         pass
 
-    # auto parsing
     try:
         d = pd.to_datetime(val, errors="coerce")
         if not pd.isna(d):
@@ -97,28 +94,25 @@ def ensure_columns(df, total_cols):
     return df
 
 
-# ===== DECODE FILE EXCEL KHÔNG MẤT DỮ LIỆU =====
-def decode_excel(b64data):
-    raw = base64.b64decode(b64data)
-    buffer = BytesIO(raw)
-
-    wb = load_workbook(buffer, data_only=True)
+# ===== DECODE EXCEL BASE64 (không đổi format) =====
+def decode_excel(b64):
+    raw = base64.b64decode(b64)
+    wb = load_workbook(BytesIO(raw), data_only=True)
     ws = wb.active
 
     rows = []
     for row in ws.iter_rows(values_only=True):
         rows.append([str(c) if c is not None else "" for c in row])
 
-    return pd.DataFrame(rows)
+    header = rows[0]
+    data = rows[1:]
+    return pd.DataFrame(data, columns=header)
 
 
-# ====== API /dongbo ======
 @app.route("/dongbo", methods=["POST"])
 def dongbo():
     try:
         data = request.get_json()
-        if not data:
-            return jsonify({"error": "Request phải gửi JSON base64"}), 400
 
         file_old_b64 = data.get("file_old")
         file_new_b64 = data.get("file_new")
@@ -127,12 +121,11 @@ def dongbo():
         if not file_old_b64 or not file_new_b64:
             return jsonify({"error": "Thiếu file_old hoặc file_new"}), 400
 
-        # Đọc file từ base64
         df_old = decode_excel(file_old_b64)
         df_new = decode_excel(file_new_b64)
         df_map = decode_excel(file_map_b64) if file_map_b64 else None
 
-        # Bỏ 9 dòng đầu file NEW
+        # SKIP 9 ROWS
         df_new = df_new.iloc[9:].reset_index(drop=True)
 
         df_old = ensure_columns(df_old, 28)
@@ -143,7 +136,7 @@ def dongbo():
         dict_all = {}
         dict_new_only = {}
 
-        # ===== LOAD NEW =====
+        # ==== LOAD NEW ====
         for i in range(len(df_new)):
             key = clean_key(df_new.iloc[i, COL_NEW_ID])
             if key:
@@ -152,7 +145,7 @@ def dongbo():
 
         rows_keep = [0]
 
-        # ===== UPDATE =====
+        # ==== UPDATE OLD ====
         for i in reversed(range(1, len(df_old))):
 
             colID = clean_key(df_old.iloc[i, COL_OLD_ID])
@@ -161,6 +154,7 @@ def dongbo():
 
                 rNew = dict_all[colID]
 
+                # GIỮ NGUYÊN LOGIC CŨ 100%
                 df_old.iloc[i, 1] = df_new.iloc[rNew, 3]
                 df_old.iloc[i, 2] = df_new.iloc[rNew, 4]
                 df_old.iloc[i, 3] = df_new.iloc[rNew, 5]
@@ -173,14 +167,14 @@ def dongbo():
                 df_old.iloc[i, 14] = df_new.iloc[rNew, 15]
                 df_old.iloc[i, 18] = safe_format(parse_date(df_new.iloc[rNew, 19]))
 
-                lichSuCu = fix_serial_date(str(df_old.iloc[i, 20]))
-
+                lichSuCu = str(df_old.iloc[i, 20]).replace("'", "")
+                lichSuCu = fix_serial_date(lichSuCu)
                 arr = [x.strip() for x in lichSuCu.split(";") if x.strip()]
 
                 if ngayGiaHan and ngayMuon and ngayGiaHan != ngayMuon:
-                    new_val = safe_format(ngayGiaHan)
-                    if new_val not in arr:
-                        arr.append(new_val)
+                    val = safe_format(ngayGiaHan)
+                    if val not in arr:
+                        arr.append(val)
 
                 lichSuCu = "; ".join(arr)
                 df_old.iloc[i, 20] = lichSuCu
@@ -191,13 +185,14 @@ def dongbo():
 
         df_old = df_old.iloc[rows_keep].reset_index(drop=True)
 
-        # ===== ADD NEW =====
+        # ==== ADD NEW ROWS ====
         new_rows = []
 
         for colID, rNew in dict_new_only.items():
 
             row = [""] * 28
 
+            # GIỮ NGUYÊN LOGIC CŨ 100%
             row[1] = df_new.iloc[rNew, 3]
             row[2] = df_new.iloc[rNew, 4]
             row[3] = df_new.iloc[rNew, 5]
@@ -230,7 +225,7 @@ def dongbo():
             df_add = pd.DataFrame(new_rows, columns=df_old.columns)
             df_old = pd.concat([df_old, df_add], ignore_index=True)
 
-        # ===== MAP =====
+        # ==== MAP FILE MAP ====
         if df_map is not None:
             dict_map = {}
             for i in range(len(df_map)):
@@ -245,7 +240,7 @@ def dongbo():
                     df_old.iloc[i, 26] = df_map.iloc[rMap, 3]
                     df_old.iloc[i, 25] = df_map.iloc[rMap, 4]
 
-        # ===== QUÁ HẠN =====
+        # ==== QUÁ HẠN ====
         today = datetime.today()
         for i in range(len(df_old)):
             d = parse_date(df_old.iloc[i, 18])
@@ -256,14 +251,13 @@ def dongbo():
             cols[27] = "Tình trạng"
         df_old.columns = cols
 
-        # ===== EXPORT =====
+        # ==== EXPORT ====
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         path = tmp.name
         tmp.close()
 
         df_old.to_excel(path, index=False, engine="openpyxl")
 
-        # TRẢ KẾT QUẢ BASE64
         with open(path, "rb") as f:
             encoded = base64.b64encode(f.read()).decode()
 
@@ -273,5 +267,4 @@ def dongbo():
         return jsonify({"error": str(e)}), 500
 
 
-# Render cần biến `application`
 application = app
