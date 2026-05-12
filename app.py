@@ -234,8 +234,8 @@ def dongbo():
 
                 if key in dict_map:
                     rMap = dict_map[key]
-                    df_old.iloc[i, 26] = df_map.iloc[rMap, 3]   # MAP[D] → OLD[Z]
-                    df_old.iloc[i, 27] = df_map.iloc[rMap, 4]   # MAP[E] → OLD[AA]
+                    df_old.iloc[i, 27] = df_map.iloc[rMap, 3]   # MAP[D] → OLD[Z]
+                    df_old.iloc[i, 26] = df_map.iloc[rMap, 4]   # MAP[E] → OLD[AA]
 
         # ===== QUÁ HẠN =====
         today = datetime.today()
