@@ -86,7 +86,7 @@ def count_gia_han(text):
     return str(len([x for x in text.split(";") if x.strip()]))
 
 
-# ===== ENSURE COL =====
+# ===== ENSURE COLUMN =====
 def ensure_columns(df, total_cols):
     if df.shape[1] < total_cols:
         for i in range(df.shape[1], total_cols):
@@ -94,7 +94,7 @@ def ensure_columns(df, total_cols):
     return df
 
 
-# ===== DECODE EXCEL BASE64 (GIỮ NGUYÊN HEADER VÀ DỮ LIỆU) =====
+# ===== DECODE EXCEL BASE64 - GIỮ NGUYÊN HEADER =====
 def decode_excel(b64):
     raw = base64.b64decode(b64)
     wb = load_workbook(BytesIO(raw), data_only=True)
@@ -106,7 +106,6 @@ def decode_excel(b64):
 
     header = rows[0]
     data = rows[1:]
-
     return pd.DataFrame(data, columns=header)
 
 
@@ -138,7 +137,7 @@ def dongbo():
         dict_all = {}
         dict_new_only = {}
 
-        # ===== LOAD NEW IDs =====
+        # ===== LOAD NEW KEYS =====
         for i in range(len(df_new)):
             key = clean_key(df_new.iloc[i, COL_NEW_ID])
             if key:
@@ -147,16 +146,14 @@ def dongbo():
 
         rows_keep = [0]
 
-        # ===== UPDATE OLD =====
+        # ===== UPDATE OLD ROWS =====
         for i in reversed(range(1, len(df_old))):
-
             colID = clean_key(df_old.iloc[i, COL_OLD_ID])
 
             if colID in dict_all:
-
                 rNew = dict_all[colID]
 
-                # GIỮ NGUYÊN LOGIC CŨ 100%
+                # GIỮ NGUYÊN LOGIC CŨ
                 df_old.iloc[i, 1] = df_new.iloc[rNew, 3]
                 df_old.iloc[i, 2] = df_new.iloc[rNew, 4]
                 df_old.iloc[i, 3] = df_new.iloc[rNew, 5]
@@ -174,9 +171,9 @@ def dongbo():
                 arr = [x.strip() for x in lichSuCu.split(";") if x.strip()]
 
                 if ngayGiaHan and ngayMuon and ngayGiaHan != ngayMuon:
-                    val = safe_format(ngayGiaHan)
-                    if val not in arr:
-                        arr.append(val)
+                    new_giahan = safe_format(ngayGiaHan)
+                    if new_giahan not in arr:
+                        arr.append(new_giahan)
 
                 lichSuCu = "; ".join(arr)
                 df_old.iloc[i, 20] = lichSuCu
@@ -189,12 +186,9 @@ def dongbo():
 
         # ===== ADD NEW ROWS =====
         new_rows = []
-
         for colID, rNew in dict_new_only.items():
-
             row = [""] * 28
 
-            # GIỮ NGUYÊN LOGIC CŨ 100%
             row[1] = df_new.iloc[rNew, 3]
             row[2] = df_new.iloc[rNew, 4]
             row[3] = df_new.iloc[rNew, 5]
@@ -227,26 +221,21 @@ def dongbo():
             df_add = pd.DataFrame(new_rows, columns=df_old.columns)
             df_old = pd.concat([df_old, df_add], ignore_index=True)
 
-        # ===== MAP FILE_MAP =====
-      # ===== MAP =====
-if df_map is not None:
-    dict_map = {}
+        # ===== MAP FILE MAP =====
+        if df_map is not None:
+            dict_map = {}
+            for i in range(len(df_map)):
+                key = clean_key(df_map.iloc[i, 2])   # MAP[C]
+                if key:
+                    dict_map[key] = i
 
-    # Duyệt file_map: KEY = cột C (col 2)
-    for i in range(len(df_map)):
-        key = clean_key(df_map.iloc[i, 2])   # MAP[C]
-        if key:
-            dict_map[key] = i
+            for i in range(1, len(df_old)):
+                key = clean_key(df_old.iloc[i, 24])  # OLD[Y]
 
-    # Map sang file_old
-    for i in range(1, len(df_old)):
-        key = clean_key(df_old.iloc[i, 24])  # OLD[Y]
-        if key in dict_map:
-            rMap = dict_map[key]
-
-            # Map D -> Z, E -> AA
-            df_old.iloc[i, 26] = df_map.iloc[rMap, 3]   # MAP[D] -> OLD[Z]
-            df_old.iloc[i, 27] = df_map.iloc[rMap, 4]   # MAP[E] -> OLD[AA]
+                if key in dict_map:
+                    rMap = dict_map[key]
+                    df_old.iloc[i, 26] = df_map.iloc[rMap, 3]   # MAP[D] → OLD[Z]
+                    df_old.iloc[i, 27] = df_map.iloc[rMap, 4]   # MAP[E] → OLD[AA]
 
         # ===== QUÁ HẠN =====
         today = datetime.today()
@@ -260,7 +249,7 @@ if df_map is not None:
             cols[27] = "Tình trạng"
         df_old.columns = cols
 
-        # ===== EXPORT FILE =====
+        # ===== EXPORT =====
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".xlsx")
         path = tmp.name
         tmp.close()
@@ -274,8 +263,7 @@ if df_map is not None:
         cols_hide = ["A", "G", "H", "I", "K", "L", "N", "P", "Q", "R", "V", "W", "X"]
 
         for col in cols_hide:
-            if col in ws.column_dimensions:
-                ws.column_dimensions[col].hidden = True
+            ws.column_dimensions[col].hidden = True
 
         wb.save(path)
 
@@ -289,4 +277,5 @@ if df_map is not None:
         return jsonify({"error": str(e)}), 500
 
 
+# Dùng cho Render
 application = app
