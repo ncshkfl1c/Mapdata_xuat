@@ -228,19 +228,25 @@ def dongbo():
             df_old = pd.concat([df_old, df_add], ignore_index=True)
 
         # ===== MAP FILE_MAP =====
-        if df_map is not None:
-            dict_map = {}
-            for i in range(len(df_map)):
-                key = clean_key(df_map.iloc[i, 2])
-                if key:
-                    dict_map[key] = i
+      # ===== MAP =====
+if df_map is not None:
+    dict_map = {}
 
-            for i in range(1, len(df_old)):
-                key = clean_key(df_old.iloc[i, 1])
-                if key in dict_map:
-                    rMap = dict_map[key]
-                    df_old.iloc[i, 26] = df_map.iloc[rMap, 3]
-                    df_old.iloc[i, 25] = df_map.iloc[rMap, 4]
+    # Duyệt file_map: KEY = cột C (col 2)
+    for i in range(len(df_map)):
+        key = clean_key(df_map.iloc[i, 2])   # MAP[C]
+        if key:
+            dict_map[key] = i
+
+    # Map sang file_old
+    for i in range(1, len(df_old)):
+        key = clean_key(df_old.iloc[i, 24])  # OLD[Y]
+        if key in dict_map:
+            rMap = dict_map[key]
+
+            # Map D -> Z, E -> AA
+            df_old.iloc[i, 26] = df_map.iloc[rMap, 3]   # MAP[D] -> OLD[Z]
+            df_old.iloc[i, 27] = df_map.iloc[rMap, 4]   # MAP[E] -> OLD[AA]
 
         # ===== QUÁ HẠN =====
         today = datetime.today()
